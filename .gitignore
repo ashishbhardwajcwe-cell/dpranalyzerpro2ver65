@@ -1,8 +1,8 @@
 node_modules/
 .env
 .env.local
-irc-data/*.md
-irc-data/*.txt
+# irc-data/*.md   <- temporarily allowed so Netlify bundles the reference files
+# irc-data/*.txt
 !irc-data/.gitkeep
 !irc-data/README.txt
 .DS_Store
