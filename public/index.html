@@ -81,7 +81,7 @@
     <div class="card">
       <div class="card-header">
         <h2>DPR Document Upload</h2>
-        <p>Upload the Detailed Project Report PDF for analysis</p>
+        <p>Upload the Detailed Project Report for analysis</p>
       </div>
 
       <div
@@ -93,12 +93,12 @@
         ondragleave="handleDragLeave(event)"
       >
         <div class="upload-icon">📄</div>
-        <h3>Drop your DPR PDF here or click to browse</h3>
-        <p>PDF files only · Maximum file size: 10 MB</p>
+        <h3>Drop your DPR document here or click to browse</h3>
+        <p>PDF, Excel, Word, PowerPoint, CSV, Text — up to 20MB</p>
         <input
           type="file"
           id="file-input"
-          accept="application/pdf,.pdf"
+          accept=".pdf,.xlsx,.xls,.csv,.doc,.docx,.ppt,.pptx,.txt"
           style="display:none;"
           onchange="handleFileSelect(event)"
         />
@@ -119,9 +119,6 @@
         </div>
       </div>
 
-      <div id="file-warning" class="alert alert-warning hidden" style="margin-top:0.75rem;">
-        ⚠ File exceeds 10 MB. Large files may take longer or fail. Please consider splitting the PDF.
-      </div>
     </div>
 
     <!-- Card 3: Analyze Button -->
@@ -280,9 +277,12 @@
     if (file) processFile(file);
   };
 
+  const ACCEPTED_EXTENSIONS = ['.pdf','.xlsx','.xls','.csv','.doc','.docx','.ppt','.pptx','.txt'];
+
   function processFile(file) {
-    if (!file.type.includes('pdf') && !file.name.toLowerCase().endsWith('.pdf')) {
-      showFormError('Only PDF files are accepted.');
+    const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+    if (!ACCEPTED_EXTENSIONS.includes(ext)) {
+      showFormError(`Unsupported file type "${ext}". Accepted formats: PDF, Excel, Word, PowerPoint, CSV, Text.`);
       return;
     }
 
@@ -291,13 +291,6 @@
     document.getElementById('file-size-display').textContent = formatBytes(file.size);
     document.getElementById('file-info-box').classList.remove('hidden');
     document.getElementById('upload-zone').style.display = 'none';
-
-    const warning = document.getElementById('file-warning');
-    if (file.size > 10 * 1024 * 1024) {
-      warning.classList.remove('hidden');
-    } else {
-      warning.classList.add('hidden');
-    }
 
     updateAnalyzeButton();
     hideFormError();
@@ -308,7 +301,6 @@
     document.getElementById('file-input').value = '';
     document.getElementById('file-info-box').classList.add('hidden');
     document.getElementById('upload-zone').style.display = 'block';
-    document.getElementById('file-warning').classList.add('hidden');
     updateAnalyzeButton();
   };
 
