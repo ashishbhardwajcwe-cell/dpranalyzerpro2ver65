@@ -348,37 +348,24 @@ exports.handler = async (event) => {
 
     // Step 4: Load IRC reference files (server-side only)
     const ircContent = loadIrcReferenceContent();
-    const ircSection = ircContent
-      ? `\n\n=== IRC AND MoRTH REFERENCE DOCUMENTS ===\n${ircContent}`
-      : '\n\n[Note: IRC reference files not yet loaded. Apply general IRC/MoRTH knowledge.]';
 
-    // Step 5: Determine file type and build the appropriate message content.
+    // Step 5: Determine file type and resolve document text.
     // Prefer the client-supplied file_type hint; fall back to the extension.
     const fileType = fileTypeHint || getFileType(documentName);
 
-    const baseUserText = `Analyze the following DPR document for compliance.
-
-Project Name: ${projectName}
-Document Name: ${documentName}
-File Type: ${fileType.toUpperCase()}
-Analysis Date: ${new Date().toLocaleDateString('en-GB')}
-${ircSection}
-
-Analyze the document thoroughly and return the compliance findings in the exact JSON format specified.`;
-
-    // Token-budget guard. Claude's window is 200K tokens (input + output). We
-    // target <=175K INPUT so the output still fits with margin. Spreadsheet/CSV
-    // data tokenises unpredictably, so we DON'T guess from character counts —
-    // we ask the real tokenizer (count_tokens) and trim the document until it
-    // actually fits, then report how much was analyzed.
-    const MAX_OUTPUT_TOKENS   = 16000;   // output budget — ample for 15-20 findings
-    const TARGET_INPUT_TOKENS = 175000;  // 175K in + 16K out = 191K, under 200K
+    const MODEL             = 'claude-haiku-4-5-20251001';
+    const MAX_OUTPUT_TOKENS = 16000;   // ample for 15-20 findings
+    const TARGET_INPUT_TOKENS = 178000; // leaves ~22K margin under 200K
 
     let truncationNotice = '';
+    let ircDropped       = false;
 
-    const MODEL = 'claude-haiku-4-5-20251001';
-
-    async function countInputTokens(content) {
+    async function countInputTokens(content, ircSection) {
+      const userText = buildUserText(ircSection) +
+        (content[0] && content[0].type === 'text'
+          ? '\n\n' + content[0].text.split('\n\n=== DOCUMENT CONTENT ===\n')[1]
+          : '');
+      // Use the full assembled message for an accurate count
       const r = await anthropic.messages.countTokens({
         model:    MODEL,
         system:   SYSTEM_PROMPT,
@@ -387,89 +374,136 @@ Analyze the document thoroughly and return the compliance findings in the exact 
       return r.input_tokens;
     }
 
-    function buildTextContent(docText, truncated) {
+    function buildUserText(ircSection) {
+      return `Analyze the following DPR document for compliance.
+
+Project Name: ${projectName}
+Document Name: ${documentName}
+File Type: ${fileType.toUpperCase()}
+Analysis Date: ${new Date().toLocaleDateString('en-GB')}
+${ircSection}
+
+Analyze the document thoroughly and return the compliance findings in the exact JSON format specified.`;
+    }
+
+    function buildTextContent(docText, ircSection, truncated) {
       const tail = truncated
-        ? '\n\n=== [DOCUMENT TRUNCATED to fit the model size limit] ==='
+        ? '\n\n=== [DOCUMENT TRUNCATED to fit the model size limit — analyze what is present] ==='
         : '';
-      return [{ type: 'text', text: `${baseUserText}\n\n=== DOCUMENT CONTENT ===\n${docText}${tail}` }];
+      return [{
+        type: 'text',
+        text: `${buildUserText(ircSection)}\n\n=== DOCUMENT CONTENT ===\n${docText}${tail}`,
+      }];
+    }
+
+    async function fitContent(docText) {
+      // Strategy: try with full IRC refs first. If still too large, drop IRC
+      // refs (the model knows IRC codes from training). Only truncate the
+      // document itself as a last resort.
+      const ircFull = ircContent
+        ? `\n\n=== IRC AND MoRTH REFERENCE DOCUMENTS ===\n${ircContent}`
+        : '\n\n[Apply IRC/MoRTH knowledge from training.]';
+      const ircNone = '\n\n[IRC reference files omitted for this large document — apply your full IRC/MoRTH training knowledge.]';
+
+      let currentIrc  = ircFull;
+      let truncated   = false;
+      const origLen   = docText.length;
+      let content     = buildTextContent(docText, currentIrc, truncated);
+
+      try {
+        let tokens = await anthropic.messages.countTokens({
+          model: MODEL, system: SYSTEM_PROMPT,
+          messages: [{ role: 'user', content }],
+        }).then(r => r.input_tokens);
+
+        if (tokens > TARGET_INPUT_TOKENS && ircContent) {
+          // Pass 1: drop IRC references — frees ~57K tokens
+          currentIrc = ircNone;
+          ircDropped = true;
+          content    = buildTextContent(docText, currentIrc, truncated);
+          tokens     = await anthropic.messages.countTokens({
+            model: MODEL, system: SYSTEM_PROMPT,
+            messages: [{ role: 'user', content }],
+          }).then(r => r.input_tokens);
+          console.log(`analyze.js: IRC refs dropped; tokens now ${tokens}`);
+        }
+
+        // Pass 2+: if still too large, trim the document
+        for (let pass = 0; pass < 6 && tokens > TARGET_INPUT_TOKENS; pass++) {
+          const ratio  = (TARGET_INPUT_TOKENS / tokens) * 0.93;
+          docText      = docText.slice(0, Math.max(0, Math.floor(docText.length * ratio)));
+          truncated    = true;
+          content      = buildTextContent(docText, currentIrc, truncated);
+          tokens       = await anthropic.messages.countTokens({
+            model: MODEL, system: SYSTEM_PROMPT,
+            messages: [{ role: 'user', content }],
+          }).then(r => r.input_tokens);
+        }
+
+        if (truncated) {
+          const keptPct = Math.max(1, Math.round((docText.length / origLen) * 100));
+          truncationNotice =
+            `The uploaded document was very large; approximately the first ${keptPct}% was analyzed ` +
+            `to stay within the model's size limit. For complete coverage, split the document into ` +
+            `smaller files and analyze each separately.`;
+          console.log(`analyze.js: document truncated to ~${keptPct}% to fit token budget`);
+        }
+      } catch (countErr) {
+        // count_tokens failed — conservative char fallback (1.8 chars/token for dense CSV)
+        console.warn('analyze.js: count_tokens failed, using char fallback:', countErr.message);
+        if (ircContent) { currentIrc = ircNone; ircDropped = true; }
+        const budget = Math.floor(TARGET_INPUT_TOKENS * 1.8);
+        if (docText.length > budget) {
+          docText = docText.slice(0, budget);
+          truncated = true;
+          truncationNotice = 'Document was trimmed to fit the model size limit.';
+        }
+        content = buildTextContent(docText, currentIrc, truncated);
+      }
+
+      return content;
     }
 
     let messageContent;
 
     if (!documentText && fileType === 'pdf') {
-      // PDFs go to Anthropic as a native base64 document (no text trimming)
+      // PDFs: send as native base64 document — no text trimming needed
+      const ircSection = ircContent
+        ? `\n\n=== IRC AND MoRTH REFERENCE DOCUMENTS ===\n${ircContent}`
+        : '\n\n[Apply IRC/MoRTH knowledge from training.]';
       messageContent = [
         {
           type: 'document',
-          source: {
-            type: 'base64',
-            media_type: 'application/pdf',
-            data: documentBase64,
-          },
+          source: { type: 'base64', media_type: 'application/pdf', data: documentBase64 },
         },
-        { type: 'text', text: baseUserText },
+        { type: 'text', text: buildUserText(ircSection) },
       ];
     } else {
-      // Text-based path: Excel/CSV/Text arrive as document_text; Word/PPT (and
-      // any legacy base64 upload) are extracted server-side.
+      // Text-based path: Excel/CSV/Text arrive as document_text; Word/PPT
+      // (and legacy base64 uploads) are extracted server-side.
       let docText;
       if (documentText) {
         docText = documentText;
       } else {
         const docBuffer = Buffer.from(documentBase64, 'base64');
-        const { text: extractedText, error: extractError } = await extractTextFromFile(docBuffer, documentName, fileType);
+        const { text: extractedText, error: extractError } =
+          await extractTextFromFile(docBuffer, documentName, fileType);
 
         if (extractError || !extractedText) {
           return {
             statusCode: 422,
             headers: CORS_HEADERS,
             body: JSON.stringify({
-              error: extractError || `Could not extract content from ${path.extname(documentName)} file. Please check the file is not corrupted.`,
+              error: extractError ||
+                `Could not extract content from ${path.extname(documentName)} file. ` +
+                `Please check the file is not corrupted.`,
             }),
           };
         }
         docText = extractedText;
       }
 
-      // Trim the document until the REAL input token count fits the budget.
-      const originalLen = docText.length;
-      let truncated = false;
-      let content   = buildTextContent(docText, truncated);
-
-      try {
-        for (let pass = 0; pass < 6; pass++) {
-          const tokens = await countInputTokens(content);
-          if (tokens <= TARGET_INPUT_TOKENS) break;
-          // Shrink the document proportionally, with a 6% safety cut each pass
-          const ratio  = (TARGET_INPUT_TOKENS / tokens) * 0.94;
-          const newLen = Math.max(0, Math.floor(docText.length * ratio));
-          docText   = docText.slice(0, newLen);
-          truncated = true;
-          content   = buildTextContent(docText, truncated);
-        }
-      } catch (countErr) {
-        // count_tokens unavailable → fall back to a conservative char cap
-        // (2.6 chars/token is deliberately low so dense CSV still fits)
-        console.warn('analyze.js: count_tokens failed, using char fallback:', countErr.message);
-        const overhead  = SYSTEM_PROMPT.length + baseUserText.length + 256;
-        const docBudget = Math.max(0, Math.floor(TARGET_INPUT_TOKENS * 2.6 - overhead));
-        if (docText.length > docBudget) {
-          docText   = docText.slice(0, docBudget);
-          truncated = true;
-        }
-        content = buildTextContent(docText, truncated);
-      }
-
-      if (truncated) {
-        const keptPct = Math.max(1, Math.round((docText.length / originalLen) * 100));
-        truncationNotice =
-          `The uploaded document was very large; approximately the first ${keptPct}% was analyzed ` +
-          `to stay within the model's size limit. For complete coverage, split the document into ` +
-          `smaller files and analyze each separately.`;
-        console.log(`analyze.js: document truncated to ~${keptPct}% to fit token budget`);
-      }
-
-      messageContent = content;
+      messageContent = await fitContent(docText);
     }
 
     // Step 6: Call Anthropic using streaming to handle long responses reliably.
@@ -532,13 +566,16 @@ Analyze the document thoroughly and return the compliance findings in the exact 
       analysisResult.project_name = projectName;
     }
 
-    // If the document was trimmed to fit the token budget, tell the user.
+    // Surface any size-fitting notes in the result.
     if (truncationNotice) {
       analysisResult.truncated = true;
       analysisResult.truncation_notice = truncationNotice;
       analysisResult.executive_summary =
         (analysisResult.executive_summary ? analysisResult.executive_summary + ' ' : '') +
-        '[' + truncationNotice + ']';
+        '[Note: ' + truncationNotice + ']';
+    }
+    if (ircDropped) {
+      console.log('analyze.js: IRC reference files were omitted to accommodate large document.');
     }
 
     // Step 8: ONLY on success — increment usage and write log
