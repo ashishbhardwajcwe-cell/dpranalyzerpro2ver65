@@ -2,9 +2,17 @@
   publish = "public"
   functions = "netlify/functions"
 
-[functions]
-  node_bundler = "esbuild"
+[functions."analyze"]
   timeout = 26
+
+[functions."auth"]
+  timeout = 10
+
+[functions."usage"]
+  timeout = 10
+
+[functions."admin"]
+  timeout = 10
 
 [[redirects]]
   from = "/*"
