@@ -8,23 +8,32 @@
  * Input  (POST JSON):
  *   { token, document_base64, document_name, project_name }
  *
- * Output (JSON): Full analysis result with findings array
+ * Supported file types:
+ *   PDF              → sent as base64 document to Anthropic API
+ *   Excel (.xlsx/.xls) → parsed with xlsx, every sheet converted to CSV text
+ *   CSV              → read as plain text
+ *   Word (.doc/.docx) → text extracted with officeparser
+ *   PowerPoint (.ppt/.pptx) → text extracted with officeparser
+ *   Text (.txt)      → read as plain text
  *
  * Flow:
  *   1. Validate token + check remaining analyses
  *   2. Rate-limit check (max 10/hour per token)
  *   3. Load IRC reference MD files from irc-data/ (server-side only)
- *   4. Build prompt with system message + IRC content
- *   5. Call Anthropic API (claude-haiku-4-5-20251001)
+ *   4. Extract/decode document content based on file type
+ *   5. Build prompt and call Anthropic API (no token limit)
  *   6. Parse JSON response
  *   7. ONLY on success: increment analyses_used and write usage_log
- *   8. Return analysis to frontend
+ *   8. Return analysis result to frontend
  */
 
 const fs   = require('fs');
 const path = require('path');
 const Anthropic = require('@anthropic-ai/sdk');
 const { createClient } = require('@supabase/supabase-js');
+const XLSX = require('xlsx');
+const mammoth = require('mammoth');
+const officeParser = require('officeparser');
 
 // Standard CORS headers
 const CORS_HEADERS = {
@@ -67,6 +76,68 @@ function loadIrcReferenceContent() {
     }
   }
   return combined;
+}
+
+/**
+ * Determines file category from filename extension.
+ * Returns one of: pdf | excel | csv | word | ppt | text | unknown
+ */
+function getFileType(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  if (ext === '.pdf')                       return 'pdf';
+  if (ext === '.xlsx' || ext === '.xls')    return 'excel';
+  if (ext === '.csv')                       return 'csv';
+  if (ext === '.doc' || ext === '.docx')    return 'word';
+  if (ext === '.ppt' || ext === '.pptx')    return 'ppt';
+  if (ext === '.txt')                       return 'text';
+  return 'unknown';
+}
+
+/**
+ * Extracts readable text from non-PDF documents.
+ * Returns { text, error } — text is null on failure.
+ *
+ * PDF files skip this function and go directly to Anthropic as base64.
+ */
+async function extractTextFromFile(buffer, filename, fileType) {
+  try {
+    if (fileType === 'excel') {
+      // Parse every sheet and render each as CSV with a sheet-name header
+      const workbook = XLSX.read(buffer, { type: 'buffer' });
+      const parts = workbook.SheetNames.map((sheetName) => {
+        const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]);
+        return `=== Sheet: ${sheetName} ===\n${csv}`;
+      });
+      return { text: parts.join('\n\n'), error: null };
+    }
+
+    if (fileType === 'csv' || fileType === 'text') {
+      return { text: buffer.toString('utf8'), error: null };
+    }
+
+    if (fileType === 'word') {
+      // mammoth gives cleaner plain-text output for .docx;
+      // fall back to officeparser for older .doc binary format
+      const ext = path.extname(filename).toLowerCase();
+      if (ext === '.docx') {
+        const result = await mammoth.extractRawText({ buffer });
+        return { text: result.value, error: null };
+      }
+      // .doc → officeparser v7 (parseOffice is async, accepts Buffer)
+      const text = await officeParser.parseOffice(buffer, { outputErrorToConsole: false });
+      return { text, error: null };
+    }
+
+    if (fileType === 'ppt') {
+      // officeparser v7 handles both .ppt and .pptx
+      const text = await officeParser.parseOffice(buffer, { outputErrorToConsole: false });
+      return { text, error: null };
+    }
+
+    return { text: null, error: `Unsupported file type: ${path.extname(filename)}` };
+  } catch (err) {
+    return { text: null, error: `Failed to parse ${path.extname(filename)} file: ${err.message}` };
+  }
 }
 
 /**
@@ -236,39 +307,62 @@ exports.handler = async (event) => {
       ? `\n\n=== IRC AND MoRTH REFERENCE DOCUMENTS ===\n${ircContent}`
       : '\n\n[Note: IRC reference files not yet loaded. Apply general IRC/MoRTH knowledge.]';
 
-    // Step 5: Build user message and call Anthropic API
-    const userMessage = `Analyze the following DPR document for compliance.
+    // Step 5: Determine file type and build the appropriate message content
+    const fileType = getFileType(documentName);
+    const docBuffer = Buffer.from(documentBase64, 'base64');
+
+    const baseUserText = `Analyze the following DPR document for compliance.
 
 Project Name: ${projectName}
 Document Name: ${documentName}
+File Type: ${fileType.toUpperCase()}
 Analysis Date: ${new Date().toLocaleDateString('en-GB')}
 ${ircSection}
 
-The DPR document is attached as a PDF. Analyze it thoroughly and return the compliance findings in the exact JSON format specified.`;
+Analyze the document thoroughly and return the compliance findings in the exact JSON format specified.`;
+
+    let messageContent;
+
+    if (fileType === 'pdf') {
+      // PDFs go to Anthropic as a native base64 document
+      messageContent = [
+        {
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: 'application/pdf',
+            data: documentBase64,
+          },
+        },
+        { type: 'text', text: baseUserText },
+      ];
+    } else {
+      // All other formats: extract text server-side, send as text content
+      const { text: extractedText, error: extractError } = await extractTextFromFile(docBuffer, documentName, fileType);
+
+      if (extractError || !extractedText) {
+        return {
+          statusCode: 422,
+          headers: CORS_HEADERS,
+          body: JSON.stringify({
+            error: extractError || `Could not extract content from ${path.extname(documentName)} file. Please check the file is not corrupted.`,
+          }),
+        };
+      }
+
+      messageContent = [
+        {
+          type: 'text',
+          text: `${baseUserText}\n\n=== DOCUMENT CONTENT ===\n${extractedText}`,
+        },
+      ];
+    }
 
     const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 32000,
+      max_tokens: 200000,
       system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: documentBase64,
-              },
-            },
-            {
-              type: 'text',
-              text: userMessage,
-            },
-          ],
-        },
-      ],
+      messages: [{ role: 'user', content: messageContent }],
     });
 
     // Step 6: Parse JSON response
