@@ -39,9 +39,9 @@
 <!-- ========== LOADING OVERLAY ========== -->
 <div class="loading-overlay hidden" id="loading-overlay">
   <div class="spinner"></div>
-  <h3>Analyzing Document</h3>
-  <p>Checking compliance against IRC Codes &amp; MoRTH 5th Revision specifications</p>
-  <p style="margin-top:0.5rem; color:rgba(200,168,78,0.8);">Typically takes 60–90 seconds</p>
+  <h3>Queueing analysis...</h3>
+  <p>Reserving processing capacity for your document</p>
+  <p style="margin-top:0.5rem; color:rgba(200,168,78,0.8);">Typically takes 1–3 minutes. Please keep this tab open.</p>
 </div>
 
 <!-- ========== MAIN CONTENT ========== -->
@@ -429,16 +429,36 @@
         payload.document_base64 = await fileToBase64(selectedFile);
       }
 
-      const data = await callAnalyze(payload);
+      // Progress callback drives the loading-overlay message as the
+      // job moves from queue → background worker → result.
+      const overlayMsg = document.querySelector('#loading-overlay h3');
+      const overlaySub = document.querySelector('#loading-overlay p');
+      function onProgress(status) {
+        if (!overlayMsg || !overlaySub) return;
+        if (status === 'queued') {
+          overlayMsg.textContent = 'Queueing analysis...';
+          overlaySub.textContent = 'Reserving processing capacity for your document';
+        } else if (status === 'processing') {
+          overlayMsg.textContent = 'Analyzing Document';
+          overlaySub.textContent = 'Checking compliance against IRC Codes & MoRTH 5th Revision specifications';
+        } else if (status === 'complete') {
+          overlayMsg.textContent = 'Preparing report...';
+          overlaySub.textContent = 'Compiling deficiency findings';
+        }
+      }
+
+      const data = await callAnalyze(payload, onProgress);
 
       document.getElementById('loading-overlay').classList.add('hidden');
 
       if (data.success && data.result) {
         currentResult = data.result;
         // Update session credits
-        Session.set('analyses_remaining', data.analyses_remaining);
-        document.getElementById('header-analyses').textContent =
-          data.analyses_remaining + ' credit' + (data.analyses_remaining === 1 ? '' : 's');
+        if (typeof data.analyses_remaining === 'number') {
+          Session.set('analyses_remaining', data.analyses_remaining);
+          document.getElementById('header-analyses').textContent =
+            data.analyses_remaining + ' credit' + (data.analyses_remaining === 1 ? '' : 's');
+        }
 
         displayResults(data.result);
       } else {
@@ -502,30 +522,31 @@
     tbody.innerHTML = '';
 
     findings.forEach(function (f) {
-      // Finding row
       const row = document.createElement('tr');
       row.className   = 'finding-row';
       row.innerHTML = `
         <td>${escapeHtml(String(f.finding_number || ''))}</td>
         <td>${severityBadge(f.severity)}</td>
-        <td><code style="font-size:0.8rem;">${escapeHtml(f.clause_reference || '—')}</code></td>
+        <td><code style="font-size:0.8rem;">${escapeHtml(f.clause_reference || f.document_name || '—')}</code></td>
         <td style="font-weight:500;">${escapeHtml(f.title || '')}</td>
-        <td style="color:#666; font-size:0.82rem;">${escapeHtml(f.page_reference || '—')}</td>
+        <td style="color:#666; font-size:0.82rem;">${escapeHtml(f.location || f.page_reference || '—')}</td>
       `;
 
-      // Detail row (hidden by default)
+      // Detail row (hidden by default) — shows ALL rich v63 fields
       const detailRow = document.createElement('tr');
       detailRow.style.display = 'none';
-      detailRow.innerHTML = `
-        <td colspan="5">
-          <div class="finding-detail">
-            <p style="margin-bottom:0.5rem;"><strong>Description:</strong> ${escapeHtml(f.description || '')}</p>
-            <div class="recommendation">
-              <strong>Recommendation:</strong> ${escapeHtml(f.recommendation || '')}
-            </div>
-          </div>
-        </td>
-      `;
+      const detailHtml = [
+        f.clause_summary && `<p style="margin:0.4rem 0;"><strong>Clause requires:</strong> ${escapeHtml(f.clause_summary)}</p>`,
+        f.failure_reason && `<p style="margin:0.4rem 0; color:#7F1D1D;"><strong>How DPR fails it:</strong> ${escapeHtml(f.failure_reason)}</p>`,
+        f.description    && `<p style="margin:0.4rem 0;"><strong>Description:</strong> ${escapeHtml(f.description)}</p>`,
+        f.impact         && `<p style="margin:0.4rem 0; color:#DC2626;"><strong>Impact if not corrected:</strong> ${escapeHtml(f.impact)}</p>`,
+        f.recommendation && `<div class="recommendation"><strong>Recommendation:</strong> ${escapeHtml(f.recommendation)}</div>`,
+        f.corrective_action && f.corrective_action !== f.recommendation
+          && `<p style="margin:0.4rem 0; color:#0E7490;"><strong>Recommended corrective action:</strong> ${escapeHtml(f.corrective_action)}</p>`,
+        f.severity_justification
+          && `<p style="margin:0.4rem 0; color:#9A3412; font-size:0.85rem;"><strong>Severity justification:</strong> ${escapeHtml(f.severity_justification)}</p>`,
+      ].filter(Boolean).join('');
+      detailRow.innerHTML = `<td colspan="5"><div class="finding-detail">${detailHtml}</div></td>`;
 
       row.addEventListener('click', function () {
         const isOpen = detailRow.style.display !== 'none';
@@ -758,31 +779,84 @@
     doc.text(recLines, MARGIN, y);
 
     // ========================
-    // PAGE 3+ — DETAILED FINDINGS
+    // PAGE 3 — PART A: QUICK REFERENCE TABLE (v63 style)
     // ========================
     const findings = result.findings || [];
-    findings.forEach(function (f, idx) {
+
+    doc.addPage();
+    addPageDecorations();
+
+    let qy = 28;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.setTextColor(...NAVY);
+    doc.text('Part A — Quick Reference Table', MARGIN, qy);
+    qy += 7;
+
+    doc.autoTable({
+      startY: qy,
+      head: [['#', 'Severity', 'Type', 'Issue', 'Document & Clause', 'DPR Location', 'How DPR Fails', 'Corrective Action']],
+      body: findings.map(function (f, i) {
+        return [
+          String(i + 1),
+          (f.severity || '').toUpperCase(),
+          f.compliance_type || 'Design',
+          f.title || '',
+          (f.document_name || '') + (f.clause_number && f.clause_number !== 'N/A' ? ' ' + f.clause_number : ''),
+          f.location || f.page_reference || '',
+          f.failure_reason || f.description || '',
+          f.corrective_action || f.recommendation || '',
+        ];
+      }),
+      styles: { font: 'helvetica', fontSize: 7, cellPadding: 2, valign: 'top', overflow: 'linebreak' },
+      headStyles: { fillColor: NAVY, textColor: GOLD, fontStyle: 'bold', fontSize: 7.5 },
+      columnStyles: {
+        0: { halign: 'center', cellWidth: 6 },
+        1: { halign: 'center', cellWidth: 14 },
+        2: { halign: 'center', cellWidth: 16 },
+        3: { cellWidth: 28 },
+        4: { cellWidth: 24, fontStyle: 'bold', textColor: [30, 58, 138] },
+        5: { cellWidth: 24, textColor: [13, 148, 136] },
+        6: { cellWidth: 40 },
+        // last column flows to fill remaining width
+      },
+      alternateRowStyles: { fillColor: [250, 248, 245] },
+      margin: { left: MARGIN, right: MARGIN },
+      didDrawPage: function () {
+        // every additional page from the table also gets decorations
+        if (doc.lastAutoTable && doc.lastAutoTable.pageNumber > 1) addPageDecorations();
+      },
+    });
+
+    // ========================
+    // PART B — DETAILED FINDINGS (grouped Design / Documentation)
+    // ========================
+    const designFindings = findings.filter(function (f) { return (f.compliance_type || 'Design') === 'Design'; });
+    const docFindings    = findings.filter(function (f) { return f.compliance_type === 'Documentation'; });
+
+    function renderFindingBlock(f) {
       doc.addPage();
       addPageDecorations();
 
       let fy = 28;
+      const sevColor = f.severity === 'critical' ? RED :
+                       f.severity === 'major'    ? ORG :
+                       f.severity === 'minor'    ? YEL : BLU;
 
-      // Finding header
-      const sevColor = f.severity === 'critical'    ? RED  :
-                       f.severity === 'major'        ? ORG  :
-                       f.severity === 'minor'        ? YEL  : BLU;
-
+      // Severity header bar
       doc.setFillColor(...sevColor);
       doc.roundedRect(MARGIN, fy, CONTENT_W, 9, 2, 2, 'F');
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
       doc.setTextColor(255, 255, 255);
       doc.text(
-        'Finding ' + f.finding_number + '  |  ' + (f.severity || '').toUpperCase() + '  |  ' + (f.clause_reference || ''),
-        MARGIN + 4, fy + 6
+        'Finding ' + (f.finding_number || '') + '  |  ' + (f.severity || '').toUpperCase() +
+          '  |  ' + (f.compliance_type || 'Design') + '  |  ' + (f.clause_reference || f.document_name || ''),
+        MARGIN + 4, fy + 6,
       );
       fy += 13;
 
+      // Title
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(11);
       doc.setTextColor(...NAVY);
@@ -790,32 +864,75 @@
       doc.text(titleLines, MARGIN, fy);
       fy += titleLines.length * 5.5 + 4;
 
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8.5);
-      doc.setTextColor(60, 60, 60);
-      const descLines = doc.splitTextToSize(f.description || '', CONTENT_W);
-      doc.text(descLines, MARGIN, fy);
-      fy += descLines.length * 4.8 + 6;
-
-      // Recommendation box
-      doc.setFillColor(255, 250, 230);
-      doc.setDrawColor(...GOLD);
-      doc.setLineWidth(0.4);
-      const recText = 'Recommendation: ' + (f.recommendation || '');
-      const recLinesF = doc.splitTextToSize(recText, CONTENT_W - 8);
-      const boxH = recLinesF.length * 4.8 + 6;
-      doc.roundedRect(MARGIN, fy, CONTENT_W, boxH, 2, 2, 'FD');
-      doc.setFont('helvetica', 'italic');
-      doc.setTextColor(90, 70, 20);
-      doc.text(recLinesF, MARGIN + 4, fy + 5);
-      fy += boxH + 6;
-
-      // Page reference
+      // Inline metadata row: category, document, location
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8);
-      doc.setTextColor(120, 120, 120);
-      doc.text('Document Reference: ' + (f.page_reference || '—'), MARGIN, fy);
-    });
+      doc.setTextColor(80, 80, 80);
+      const meta = [];
+      if (f.category) meta.push('Category: ' + f.category);
+      if (f.document_name) meta.push('Document: ' + f.document_name + (f.clause_number && f.clause_number !== 'N/A' ? ' ' + f.clause_number : ''));
+      if (f.location || f.page_reference) meta.push('DPR Location: ' + (f.location || f.page_reference));
+      if (meta.length) {
+        const metaLines = doc.splitTextToSize(meta.join('   |   '), CONTENT_W);
+        doc.text(metaLines, MARGIN, fy);
+        fy += metaLines.length * 4.5 + 4;
+      }
+
+      // Helper: render a boxed labelled section
+      function box(label, text, bg, border, textColor) {
+        if (!text) return;
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8);
+        doc.setTextColor(...border);
+        doc.text(label, MARGIN, fy);
+        fy += 4;
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(...textColor);
+        const lines = doc.splitTextToSize(text, CONTENT_W - 8);
+        const boxH = lines.length * 4.5 + 6;
+
+        doc.setFillColor(...bg);
+        doc.setDrawColor(...border);
+        doc.setLineWidth(0.3);
+        doc.roundedRect(MARGIN, fy, CONTENT_W, boxH, 2, 2, 'FD');
+        doc.text(lines, MARGIN + 4, fy + 5);
+        fy += boxH + 4;
+      }
+
+      box('CLAUSE REQUIRES:',                f.clause_summary,         [248, 250, 252], [100, 116, 139], [30, 41, 59]);
+      box('HOW DPR FAILS IT:',               f.failure_reason,         [254, 242, 242], [220,  38,  38], [127, 29, 29]);
+      box('DESCRIPTION:',                    f.description,            [250, 250, 250], [148, 163, 184], [60, 60, 60]);
+      box('IMPACT IF NOT CORRECTED:',        f.impact,                 [254, 242, 242], [220,  38,  38], [220, 38, 38]);
+      box('RECOMMENDED CORRECTIVE ACTION:',  f.corrective_action || f.recommendation, [236, 254, 255], [14, 116, 144], [14, 116, 144]);
+      box('SEVERITY JUSTIFICATION:',         f.severity_justification, [255, 247, 237], [180,  83,   9], [180, 83,  9]);
+    }
+
+    function renderSectionHeader(label, count) {
+      doc.addPage();
+      addPageDecorations();
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(18);
+      doc.setTextColor(...NAVY);
+      doc.text('Part B — Detailed Findings', MARGIN, 50);
+      doc.setFontSize(14);
+      doc.setTextColor(...GOLD);
+      doc.text(label, MARGIN, 62);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      doc.setTextColor(80, 80, 80);
+      doc.text(count + ' finding' + (count === 1 ? '' : 's') + ' in this section', MARGIN, 70);
+    }
+
+    if (designFindings.length > 0) {
+      renderSectionHeader('Design Compliance', designFindings.length);
+      designFindings.forEach(renderFindingBlock);
+    }
+    if (docFindings.length > 0) {
+      renderSectionHeader('Documentation Compliance', docFindings.length);
+      docFindings.forEach(renderFindingBlock);
+    }
 
     // ========================
     // FINAL PAGE — DISCLAIMER

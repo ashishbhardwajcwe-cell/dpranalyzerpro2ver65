@@ -2,8 +2,19 @@
   publish = "public"
   functions = "netlify/functions"
 
+# analyze.js is the fast job orchestrator (validates, queues, fires
+# the background function, returns job_id). 10 s is plenty.
 [functions."analyze"]
-  timeout = 26
+  timeout = 10
+
+# analyze-background.js uses the -background suffix, which Netlify
+# automatically recognises as a Background Function (up to 15-minute
+# runtime, response body discarded). No timeout setting needed here —
+# Netlify ignores per-function timeouts for background functions.
+
+# analyze-status.js is polled by the client every few seconds.
+[functions."analyze-status"]
+  timeout = 10
 
 [functions."auth"]
   timeout = 10
