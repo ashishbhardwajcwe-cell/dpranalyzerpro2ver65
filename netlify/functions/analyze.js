@@ -354,25 +354,31 @@ exports.handler = async (event) => {
     const fileType = fileTypeHint || getFileType(documentName);
 
     const MODEL             = 'claude-haiku-4-5-20251001';
-    const MAX_OUTPUT_TOKENS = 16000;   // ample for 15-20 findings
-    const TARGET_INPUT_TOKENS = 178000; // leaves ~22K margin under 200K
+    const MAX_OUTPUT_TOKENS = 8000;   // 15-20 findings typically need 4-6K tokens
+
+    // Token-budget strategy — NO count_tokens API calls (they add 4-6s of
+    // overhead and push us past Netlify's 26-second function limit).
+    //
+    // Instead we use character-length thresholds calibrated to observed data:
+    // your DPR spreadsheets tokenise at roughly 10-20 chars/token for dense
+    // numeric CSV.  IRC reference files = ~57K tokens = ~220K chars overhead.
+    //
+    // Thresholds (conservative — use 10 chars/token safety factor):
+    //   > IRC_DROP_CHARS  → drop IRC refs (frees ~57K tokens; model uses training)
+    //   > DOC_TRIM_CHARS  → hard-trim the document to DOC_TRIM_CHARS chars
+    //
+    // At 10 chars/token:  DOC_TRIM_CHARS / 10 = 150K tokens + 8K output = 158K total < 200K ✓
+    // At 20 chars/token:  same chars / 20  =  75K tokens → even more comfortable ✓
+    const IRC_DROP_CHARS = 500_000;    // ~50K+ doc tokens → IRC overhead becomes a risk
+    const DOC_TRIM_CHARS = 1_500_000;  // hard cap: ~150K tokens at 10 chars/token
 
     let truncationNotice = '';
     let ircDropped       = false;
 
-    async function countInputTokens(content, ircSection) {
-      const userText = buildUserText(ircSection) +
-        (content[0] && content[0].type === 'text'
-          ? '\n\n' + content[0].text.split('\n\n=== DOCUMENT CONTENT ===\n')[1]
-          : '');
-      // Use the full assembled message for an accurate count
-      const r = await anthropic.messages.countTokens({
-        model:    MODEL,
-        system:   SYSTEM_PROMPT,
-        messages: [{ role: 'user', content }],
-      });
-      return r.input_tokens;
-    }
+    const ircFull = ircContent
+      ? `\n\n=== IRC AND MoRTH REFERENCE DOCUMENTS ===\n${ircContent}`
+      : '\n\n[Apply IRC/MoRTH knowledge from training.]';
+    const ircNone = '\n\n[Large document: IRC reference files omitted to fit model limit. Apply full IRC/MoRTH training knowledge for clause citations.]';
 
     function buildUserText(ircSection) {
       return `Analyze the following DPR document for compliance.
@@ -388,7 +394,7 @@ Analyze the document thoroughly and return the compliance findings in the exact 
 
     function buildTextContent(docText, ircSection, truncated) {
       const tail = truncated
-        ? '\n\n=== [DOCUMENT TRUNCATED to fit the model size limit — analyze what is present] ==='
+        ? '\n\n=== [DOCUMENT TRUNCATED to fit model limit — analyze the content above] ==='
         : '';
       return [{
         type: 'text',
@@ -396,72 +402,32 @@ Analyze the document thoroughly and return the compliance findings in the exact 
       }];
     }
 
-    async function fitContent(docText) {
-      // Strategy: try with full IRC refs first. If still too large, drop IRC
-      // refs (the model knows IRC codes from training). Only truncate the
-      // document itself as a last resort.
-      const ircFull = ircContent
-        ? `\n\n=== IRC AND MoRTH REFERENCE DOCUMENTS ===\n${ircContent}`
-        : '\n\n[Apply IRC/MoRTH knowledge from training.]';
-      const ircNone = '\n\n[IRC reference files omitted for this large document — apply your full IRC/MoRTH training knowledge.]';
+    function fitDocText(rawText) {
+      const origLen = rawText.length;
+      let docText   = rawText;
+      let irc       = ircFull;
+      let truncated = false;
 
-      let currentIrc  = ircFull;
-      let truncated   = false;
-      const origLen   = docText.length;
-      let content     = buildTextContent(docText, currentIrc, truncated);
-
-      try {
-        let tokens = await anthropic.messages.countTokens({
-          model: MODEL, system: SYSTEM_PROMPT,
-          messages: [{ role: 'user', content }],
-        }).then(r => r.input_tokens);
-
-        if (tokens > TARGET_INPUT_TOKENS && ircContent) {
-          // Pass 1: drop IRC references — frees ~57K tokens
-          currentIrc = ircNone;
-          ircDropped = true;
-          content    = buildTextContent(docText, currentIrc, truncated);
-          tokens     = await anthropic.messages.countTokens({
-            model: MODEL, system: SYSTEM_PROMPT,
-            messages: [{ role: 'user', content }],
-          }).then(r => r.input_tokens);
-          console.log(`analyze.js: IRC refs dropped; tokens now ${tokens}`);
-        }
-
-        // Pass 2+: if still too large, trim the document
-        for (let pass = 0; pass < 6 && tokens > TARGET_INPUT_TOKENS; pass++) {
-          const ratio  = (TARGET_INPUT_TOKENS / tokens) * 0.93;
-          docText      = docText.slice(0, Math.max(0, Math.floor(docText.length * ratio)));
-          truncated    = true;
-          content      = buildTextContent(docText, currentIrc, truncated);
-          tokens       = await anthropic.messages.countTokens({
-            model: MODEL, system: SYSTEM_PROMPT,
-            messages: [{ role: 'user', content }],
-          }).then(r => r.input_tokens);
-        }
-
-        if (truncated) {
-          const keptPct = Math.max(1, Math.round((docText.length / origLen) * 100));
-          truncationNotice =
-            `The uploaded document was very large; approximately the first ${keptPct}% was analyzed ` +
-            `to stay within the model's size limit. For complete coverage, split the document into ` +
-            `smaller files and analyze each separately.`;
-          console.log(`analyze.js: document truncated to ~${keptPct}% to fit token budget`);
-        }
-      } catch (countErr) {
-        // count_tokens failed — conservative char fallback (1.8 chars/token for dense CSV)
-        console.warn('analyze.js: count_tokens failed, using char fallback:', countErr.message);
-        if (ircContent) { currentIrc = ircNone; ircDropped = true; }
-        const budget = Math.floor(TARGET_INPUT_TOKENS * 1.8);
-        if (docText.length > budget) {
-          docText = docText.slice(0, budget);
-          truncated = true;
-          truncationNotice = 'Document was trimmed to fit the model size limit.';
-        }
-        content = buildTextContent(docText, currentIrc, truncated);
+      // Step A: drop IRC refs if document is large (instant, no API call)
+      if (docText.length > IRC_DROP_CHARS && ircContent) {
+        irc        = ircNone;
+        ircDropped = true;
+        console.log(`analyze.js: IRC refs dropped (doc ${docText.length} chars > ${IRC_DROP_CHARS} threshold)`);
       }
 
-      return content;
+      // Step B: hard-trim document if still too large (instant, no API call)
+      if (docText.length > DOC_TRIM_CHARS) {
+        docText   = docText.slice(0, DOC_TRIM_CHARS);
+        truncated = true;
+        const keptPct = Math.round((DOC_TRIM_CHARS / origLen) * 100);
+        truncationNotice =
+          `The uploaded document was very large; approximately the first ${keptPct}% was analyzed ` +
+          `to stay within the model's size limit. For complete coverage, split the document into ` +
+          `smaller files and analyze each separately.`;
+        console.log(`analyze.js: document trimmed to ${DOC_TRIM_CHARS} chars (~${keptPct}% of original)`);
+      }
+
+      return buildTextContent(docText, irc, truncated);
     }
 
     let messageContent;
@@ -503,7 +469,7 @@ Analyze the document thoroughly and return the compliance findings in the exact 
         docText = extractedText;
       }
 
-      messageContent = await fitContent(docText);
+      messageContent = fitDocText(docText);  // synchronous — no API calls
     }
 
     // Step 6: Call Anthropic using streaming to handle long responses reliably.
