@@ -44,7 +44,6 @@ const IRC_FILES = [
   'IRC_73_1980_Extraction.md',
   'IRC_SP13_DPR_Analyzer_Extraction.md',
   'IRC_SP42_2014_DPR_Analyzer_Extraction.md',
-  'IS_1893_Part1_2016_DPR_Reference.md',
 ];
 
 // The irc-data folder path (relative to the function at runtime)
