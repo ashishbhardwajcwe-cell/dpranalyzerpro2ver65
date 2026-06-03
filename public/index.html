@@ -198,9 +198,30 @@
         <button class="btn btn-gold btn-lg" id="download-pdf-btn" onclick="generatePDF()">
           ⬇ Download PDF Report
         </button>
+        <button class="btn btn-lg" id="podcast-btn" onclick="generatePodcast()"
+          style="background:#4c1d95;color:#e9d5ff;border:2px solid #7c3aed;font-family:'Montserrat',sans-serif;font-weight:600;letter-spacing:0.04em;">
+          🎙️ Audio Overview
+        </button>
         <button class="btn btn-outline" onclick="newAnalysis()">
           ↩ New Analysis
         </button>
+      </div>
+
+      <!-- ===== AUDIO OVERVIEW PANEL ===== -->
+      <!-- State managed by generatePodcast() / renderPodcastPanel() in JS below -->
+      <div id="audio-overview-panel" style="display:none; margin-top:1.5rem; border-radius:10px; overflow:hidden; border:1px solid #7c3aed;">
+        <div style="background:linear-gradient(135deg,#4c1d95,#2e1065); padding:0.9rem 1.25rem; display:flex; align-items:center; gap:0.75rem;">
+          <span style="font-size:1.2rem;">🎙️</span>
+          <div>
+            <div style="color:white; font-weight:600; font-size:0.95rem; font-family:'Cormorant Garamond',serif;">Audio Overview</div>
+            <div style="color:#c4b5fd; font-size:0.72rem; margin-top:0.1rem; letter-spacing:0.04em; text-transform:uppercase;">Auto-generated spoken overview</div>
+          </div>
+          <button
+            onclick="document.getElementById('audio-overview-panel').style.display='none'"
+            title="Close"
+            style="margin-left:auto;background:transparent;border:none;color:#a78bfa;font-size:1.4rem;cursor:pointer;line-height:1;padding:0 0.25rem;">×</button>
+        </div>
+        <div id="audio-overview-body" style="padding:1.25rem; background:#0f0620; min-height:60px;"></div>
       </div>
     </div>
 
@@ -253,6 +274,17 @@
   // ---- State ----
   let selectedFile   = null;
   let currentResult  = null;
+
+  // ---- Podcast state ----
+  // States: idle | scripting | audio | ready | error | unconfigured
+  let pcState          = 'idle';
+  let pcScript         = null;
+  let pcAudioUrl       = null;
+  let pcWavBlob        = null;
+  let pcShowTranscript = false;
+  let pcTranscriptHtml = '';
+  let pcAudioProgress  = '';
+  let pcErrorMsg       = '';
 
   // ---- File handling ----
 
@@ -462,6 +494,10 @@
     document.getElementById('client-dept').value = '';
     document.getElementById('results-section').classList.add('hidden');
     document.getElementById('upload-section').classList.remove('hidden');
+    // Clean up podcast panel and release any blob URL
+    if (pcAudioUrl) { URL.revokeObjectURL(pcAudioUrl); pcAudioUrl = null; }
+    pcState = 'idle'; pcScript = null; pcWavBlob = null;
+    document.getElementById('audio-overview-panel').style.display = 'none';
     updateAnalyzeButton();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -746,6 +782,351 @@
     // Save
     const safeProject = projectName.replace(/[^a-zA-Z0-9\s\-_]/g, '').substring(0, 40).trim().replace(/\s+/g, '_');
     doc.save('AURIS_DPR_Report_' + safeProject + '_' + today.replace(/\//g, '-') + '.pdf');
+  };
+
+  // ================================================================
+  // PODCAST / AUDIO OVERVIEW FEATURE
+  // Pipeline:
+  //   1. pcGenerateScript  → /.netlify/functions/anthropic-proxy
+  //                          Returns JSON { title, turns:[{speaker,text}] }
+  //   2. pcSynthChunk      → /.netlify/functions/gemini-tts  (per chunk)
+  //                          Returns base64 PCM audio (24 kHz / 16-bit / mono)
+  //   3. pcmToWavBlob      → Concatenates PCM chunks + prepends 44-byte WAV header
+  //   4. renderPodcastPanel → Updates the #audio-overview-body DOM element
+  //
+  // NO API keys are in this file. Both calls go through Netlify proxy functions.
+  // ================================================================
+
+  // --- pcB64ToBytes: base64 string → Uint8Array ---
+  function pcB64ToBytes(b64) {
+    var bin   = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+
+  // --- pcmToWavBlob: array of Uint8Array PCM chunks → WAV Blob ---
+  function pcmToWavBlob(pcmChunks, sampleRate, bitsPerSample) {
+    sampleRate    = sampleRate    || 24000;
+    bitsPerSample = bitsPerSample || 16;
+    var numChannels = 1;
+    var dataSize    = pcmChunks.reduce(function (s, c) { return s + c.byteLength; }, 0);
+    var buf = new ArrayBuffer(44 + dataSize);
+    var v   = new DataView(buf);
+
+    function ws(off, str) {
+      for (var i = 0; i < str.length; i++) v.setUint8(off + i, str.charCodeAt(i));
+    }
+
+    ws(0,  'RIFF');
+    v.setUint32(4,  36 + dataSize, true);          // ChunkSize
+    ws(8,  'WAVE');
+    ws(12, 'fmt ');
+    v.setUint32(16, 16, true);                     // Subchunk1Size (PCM = 16)
+    v.setUint16(20, 1,  true);                     // AudioFormat (PCM = 1)
+    v.setUint16(22, numChannels, true);
+    v.setUint32(24, sampleRate, true);
+    v.setUint32(28, sampleRate * numChannels * (bitsPerSample / 8), true); // ByteRate
+    v.setUint16(32, numChannels * (bitsPerSample / 8), true);              // BlockAlign
+    v.setUint16(34, bitsPerSample, true);
+    ws(36, 'data');
+    v.setUint32(40, dataSize, true);               // Subchunk2Size
+
+    var offset = 44;
+    for (var ci = 0; ci < pcmChunks.length; ci++) {
+      new Uint8Array(buf, offset, pcmChunks[ci].byteLength).set(pcmChunks[ci]);
+      offset += pcmChunks[ci].byteLength;
+    }
+    return new Blob([buf], { type: 'audio/wav' });
+  }
+
+  // --- pcGenerateScript: calls anthropic-proxy to produce a JSON podcast script ---
+  async function pcGenerateScript(result, projectName) {
+    var topFindings = (result.findings || []).slice(0, 8).map(function (f, i) {
+      return (i + 1) + '. [' + (f.severity || '').toUpperCase() + '] ' +
+             (f.title || '') + ': ' + (f.description || '');
+    }).join('\n');
+
+    var digest =
+      'Project: '            + projectName                         + '\n' +
+      'Compliance Score: '   + (result.compliance_score || 0)      + '/100\n' +
+      'Total Findings: '     + (result.total_findings   || 0)      +
+        ' ('  + (result.critical_count    || 0) + ' critical, '    +
+               (result.major_count        || 0) + ' major, '       +
+               (result.minor_count        || 0) + ' minor, '       +
+               (result.observation_count  || 0) + ' observations)\n' +
+      'Executive Summary: '       + (result.executive_summary      || '') + '\n' +
+      'Overall Recommendation: '  + (result.overall_recommendation || '') + '\n' +
+      'Key Findings:\n'           + topFindings;
+
+    var prompt =
+      'You are writing a podcast script for an audio overview of a highway DPR compliance report.\n' +
+      'Two hosts discuss the findings in warm, conversational Indian-English:\n' +
+      '  - Anjali (speaker A): senior reviewing engineer who explains technical findings clearly\n' +
+      '  - Rohan  (speaker B): curious co-host who asks layperson questions\n\n' +
+      'Target: 16–22 short turns, plain language, 2.5–3.5 minutes when spoken aloud.\n' +
+      'Do NOT use the words "AI", "artificial intelligence", or "machine learning".\n' +
+      'Open with a brief intro, cover the compliance score, highlight the most important\n' +
+      'findings by severity, then close with the overall recommendation.\n\n' +
+      'Report digest:\n' + digest + '\n\n' +
+      'Return ONLY valid JSON with no markdown backticks:\n' +
+      '{"title":"<episode title>","turns":[{"speaker":"A","text":"..."},{"speaker":"B","text":"..."}]}';
+
+    var res = await fetch('/.netlify/functions/anthropic-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model:      'claude-haiku-4-5-20251001',
+        max_tokens: 4096,
+        messages:   [{ role: 'user', content: prompt }],
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error('Script generation failed (HTTP ' + res.status + ')');
+    }
+    var data = await res.json();
+    if (data.error) {
+      throw new Error('Script error: ' + (data.error.message || JSON.stringify(data.error)));
+    }
+
+    var rawText = (data.content && data.content[0] && data.content[0].text) || '';
+    var cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    return JSON.parse(cleaned);
+  }
+
+  // --- pcSynthChunk: synthesise one chunk of turns via gemini-tts proxy ---
+  async function pcSynthChunk(turns, chunkIdx, totalChunks) {
+    // Format as "SpeakerName: text\n" — Gemini maps names to voice configs
+    var text = turns.map(function (t) {
+      return (t.speaker === 'A' ? 'Anjali' : 'Rohan') + ': ' + t.text;
+    }).join('\n');
+
+    var res = await fetch('/.netlify/functions/gemini-tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: text }] }],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            multiSpeakerVoiceConfig: {
+              speakerVoiceConfigs: [
+                { speaker: 'Anjali', voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+                { speaker: 'Rohan',  voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
+              ],
+            },
+          },
+        },
+      }),
+    });
+
+    if (!res.ok) {
+      var errText = await res.text();
+      throw new Error(
+        'Voice service error on segment ' + (chunkIdx + 1) +
+        ' of ' + totalChunks + ': HTTP ' + res.status +
+        ' — ' + errText.substring(0, 200)
+      );
+    }
+
+    var data = await res.json();
+    if (data.error) {
+      throw new Error('Voice service error: ' + (data.error.message || JSON.stringify(data.error)));
+    }
+
+    var b64 = data.candidates &&
+              data.candidates[0] &&
+              data.candidates[0].content &&
+              data.candidates[0].content.parts &&
+              data.candidates[0].content.parts[0] &&
+              data.candidates[0].content.parts[0].inlineData &&
+              data.candidates[0].content.parts[0].inlineData.data;
+
+    if (!b64) {
+      throw new Error('Voice service returned no audio for segment ' + (chunkIdx + 1));
+    }
+    return pcB64ToBytes(b64);
+  }
+
+  // --- renderPodcastPanel: update #audio-overview-body based on pcState ---
+  function renderPodcastPanel() {
+    var body = document.getElementById('audio-overview-body');
+
+    var projectName = (currentResult && currentResult.project_name) ||
+                      document.getElementById('project-name').value || 'report';
+    var safeProject = projectName.replace(/[^a-zA-Z0-9\s\-_]/g, '')
+                                 .substring(0, 40).trim().replace(/\s+/g, '_');
+
+    var spinnerHtml =
+      '<div style="width:26px;height:26px;border:3px solid rgba(196,181,253,0.2);' +
+      'border-top-color:#c4b5fd;border-radius:50%;animation:spin 0.9s linear infinite;' +
+      'flex-shrink:0;"></div>';
+
+    var spinnerRow = function (title, sub) {
+      return '<div style="display:flex;align-items:center;gap:1rem;padding:0.25rem 0;">' +
+        spinnerHtml +
+        '<div>' +
+          '<div style="color:white;font-weight:600;font-size:0.875rem;">' + title + '</div>' +
+          '<div style="color:#a78bfa;font-size:0.78rem;margin-top:0.15rem;">' + sub + '</div>' +
+        '</div>' +
+      '</div>';
+    };
+
+    if (pcState === 'unconfigured') {
+      body.innerHTML =
+        '<p style="color:#c4b5fd;font-size:0.875rem;line-height:1.7;">' +
+        'The audio overview service is not configured. ' +
+        'Add a <code style="background:#2d1b69;padding:2px 6px;border-radius:4px;' +
+        'font-size:0.8rem;">GEMINI_API_KEY</code> in the Netlify environment to ' +
+        'enable spoken audio overviews.</p>';
+      return;
+    }
+
+    if (pcState === 'scripting') {
+      body.innerHTML = spinnerRow('Writing script…', 'Preparing spoken overview');
+      return;
+    }
+
+    if (pcState === 'audio') {
+      body.innerHTML = spinnerRow(
+        escapeHtml(pcAudioProgress),
+        'Synthesising voices — this may take a moment'
+      );
+      return;
+    }
+
+    if (pcState === 'error') {
+      body.innerHTML =
+        '<div style="padding:0.25rem 0;">' +
+        '<div style="color:#fca5a5;font-size:0.875rem;margin-bottom:0.75rem;">' +
+        '⚠ ' + escapeHtml(pcErrorMsg) + '</div>' +
+        '<button onclick="generatePodcast()" ' +
+        'style="background:#4c1d95;color:#e9d5ff;border:1px solid #7c3aed;' +
+        'padding:0.4rem 1rem;border-radius:6px;font-size:0.82rem;font-weight:600;cursor:pointer;">' +
+        '↻ Retry</button>' +
+        '</div>';
+      return;
+    }
+
+    if (pcState === 'ready') {
+      var transcriptBlock = pcShowTranscript
+        ? '<div style="max-height:300px;overflow-y:auto;background:#0a0118;' +
+          'border-radius:8px;padding:1rem;border:1px solid #3b0764;' +
+          'font-size:0.82rem;line-height:1.75;margin-top:0.85rem;">' +
+          pcTranscriptHtml + '</div>'
+        : '';
+
+      var btnStyle =
+        'padding:0.45rem 1rem;border-radius:6px;font-size:0.82rem;font-weight:600;cursor:pointer;';
+
+      body.innerHTML =
+        '<audio id="pc-audio-player" controls src="' + pcAudioUrl + '" ' +
+        'style="width:100%;margin-bottom:1rem;accent-color:#c4b5fd;"></audio>' +
+        '<div style="display:flex;gap:0.65rem;flex-wrap:wrap;">' +
+          '<a href="' + pcAudioUrl + '" download="' + safeProject + '_podcast.wav" ' +
+          'style="background:#4c1d95;color:#e9d5ff;border:1px solid #7c3aed;' +
+          'text-decoration:none;' + btnStyle + '">⬇ Download audio</a>' +
+          '<button onclick="pcToggleTranscript()" ' +
+          'style="background:transparent;color:#c4b5fd;border:1px solid #7c3aed;' + btnStyle + '">' +
+          (pcShowTranscript ? 'Hide transcript' : 'Show transcript') + '</button>' +
+          '<button onclick="generatePodcast()" ' +
+          'style="background:transparent;color:#a78bfa;border:1px solid #4c1d95;' + btnStyle + '">' +
+          '↻ Regenerate</button>' +
+        '</div>' + transcriptBlock;
+    }
+  }
+
+  // --- pcToggleTranscript: toggle transcript visibility ---
+  window.pcToggleTranscript = function () {
+    pcShowTranscript = !pcShowTranscript;
+    renderPodcastPanel();
+  };
+
+  // --- generatePodcast: full pipeline orchestrator ---
+  window.generatePodcast = async function () {
+    var panel = document.getElementById('audio-overview-panel');
+    panel.style.display = 'block';
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    // Check voice service availability via get-config
+    var geminiAvailable = false;
+    try {
+      var cfg = await fetch('/.netlify/functions/get-config').then(function (r) { return r.json(); });
+      geminiAvailable = !!cfg.gemini;
+    } catch (_) {}
+
+    if (!geminiAvailable) {
+      pcState = 'unconfigured';
+      renderPodcastPanel();
+      return;
+    }
+
+    // Reset prior session
+    if (pcAudioUrl) { URL.revokeObjectURL(pcAudioUrl); pcAudioUrl = null; }
+    pcScript         = null;
+    pcWavBlob        = null;
+    pcShowTranscript = false;
+    pcTranscriptHtml = '';
+    pcErrorMsg       = '';
+
+    var projectName = (currentResult && currentResult.project_name) ||
+                      document.getElementById('project-name').value || 'DPR Report';
+
+    try {
+      // Step 1: Generate script via anthropic-proxy
+      pcState = 'scripting';
+      renderPodcastPanel();
+      pcScript = await pcGenerateScript(currentResult, projectName);
+
+      // Step 2: Chunk turns by ~1100 chars per chunk
+      var turns  = pcScript.turns || [];
+      var chunks = [];
+      var cur = [], charCount = 0;
+      for (var ti = 0; ti < turns.length; ti++) {
+        var t   = turns[ti];
+        var len = t.text.length;
+        if (charCount + len > 1100 && cur.length > 0) {
+          chunks.push(cur.slice());
+          cur = []; charCount = 0;
+        }
+        cur.push(t);
+        charCount += len;
+      }
+      if (cur.length) chunks.push(cur);
+
+      // Step 3: Synthesise each chunk via gemini-tts
+      var pcmParts = [];
+      for (var ci = 0; ci < chunks.length; ci++) {
+        pcState         = 'audio';
+        pcAudioProgress = 'Generating audio ' + (ci + 1) + ' of ' + chunks.length + '…';
+        renderPodcastPanel();
+        var pcm = await pcSynthChunk(chunks[ci], ci, chunks.length);
+        pcmParts.push(pcm);
+      }
+
+      // Step 4: Stitch PCM chunks → WAV → Blob URL
+      var wavBlob = pcmToWavBlob(pcmParts);
+      pcAudioUrl  = URL.createObjectURL(wavBlob);
+      pcWavBlob   = wavBlob;
+
+      // Build transcript HTML (speaker name colour-coded)
+      pcTranscriptHtml = turns.map(function (t) {
+        var name  = t.speaker === 'A' ? 'Anjali' : 'Rohan';
+        var color = t.speaker === 'A' ? '#c4b5fd' : '#93c5fd';
+        return '<div style="margin-bottom:0.65rem;">' +
+          '<strong style="color:' + color + ';">' + escapeHtml(name) + ':</strong> ' +
+          '<span style="color:#e2e8f0;">' + escapeHtml(t.text) + '</span></div>';
+      }).join('');
+
+      pcState = 'ready';
+      renderPodcastPanel();
+
+    } catch (err) {
+      pcErrorMsg = err.message || 'An unknown error occurred.';
+      pcState    = 'error';
+      renderPodcastPanel();
+    }
   };
 
 })();
