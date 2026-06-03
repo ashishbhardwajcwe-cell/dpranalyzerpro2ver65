@@ -45,7 +45,12 @@ async function callAuth(token) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token }),
   });
-  return res.json();
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { valid: false, message: `Server error (${res.status}). Please retry or contact support.` };
+  }
 }
 
 async function callAnalyze(payload) {

@@ -75,6 +75,7 @@ exports.handler = async (event) => {
       process.env.SUPABASE_SERVICE_KEY,
       { realtime: { transport: ws } }
     );
+    console.log('auth.js: Supabase client created');
 
     // Lookup token in firms table
     const { data: firm, error } = await supabase
@@ -83,13 +84,18 @@ exports.handler = async (event) => {
       .eq('access_token', token)
       .single();
 
+    console.log('auth.js: query done — error:', error ? (error.code + ' ' + error.message) : 'none', '| firm found:', !!firm);
+
     if (error || !firm) {
+      console.log('auth.js: returning invalid token — supabase error code:', error?.code);
       return {
         statusCode: 200,
         headers: CORS_HEADERS,
         body: JSON.stringify({ valid: false, message: 'Invalid access token. Please check your token and try again.' }),
       };
     }
+
+    console.log('auth.js: firm =', firm.firm_name, '| is_active:', firm.is_active, '| analyses_total:', firm.analyses_total, '| analyses_used:', firm.analyses_used, '| expiry_date:', firm.expiry_date);
 
     // Check account is active
     if (!firm.is_active) {
@@ -103,7 +109,8 @@ exports.handler = async (event) => {
     // Check expiry date
     if (firm.expiry_date) {
       const expiry = new Date(firm.expiry_date);
-      expiry.setHours(23, 59, 59, 999); // End of expiry day
+      expiry.setHours(23, 59, 59, 999);
+      console.log('auth.js: expiry check — expiry date:', expiry.toISOString(), '| now:', new Date().toISOString(), '| expired:', expiry < new Date());
       if (expiry < new Date()) {
         return {
           statusCode: 200,
@@ -113,8 +120,10 @@ exports.handler = async (event) => {
       }
     }
 
-    // Check remaining analyses
-    const analysesRemaining = firm.analyses_total - firm.analyses_used;
+    // Calculate analyses remaining from raw columns (firms table has no computed column)
+    const analysesRemaining = Number(firm.analyses_total) - Number(firm.analyses_used);
+    console.log('auth.js: analysesRemaining:', analysesRemaining);
+
     if (analysesRemaining <= 0) {
       return {
         statusCode: 200,
@@ -127,6 +136,7 @@ exports.handler = async (event) => {
     }
 
     // All checks passed — return success
+    console.log('auth.js: authentication successful for', firm.firm_name);
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
@@ -135,15 +145,16 @@ exports.handler = async (event) => {
         firm_name: firm.firm_name,
         firm_id: firm.id,
         analyses_remaining: analysesRemaining,
-        analyses_total: firm.analyses_total,
-        analyses_used: firm.analyses_used,
+        analyses_total: Number(firm.analyses_total),
+        analyses_used: Number(firm.analyses_used),
         expiry_date: firm.expiry_date,
         license_type: firm.license_type,
         message: 'Authentication successful',
       }),
     };
   } catch (err) {
-    console.error('auth.js error:', err);
+    console.error('auth.js caught exception:', err.name, '|', err.message);
+    console.error('auth.js stack:', err.stack);
     return {
       statusCode: 500,
       headers: CORS_HEADERS,
