@@ -10,6 +10,7 @@
  */
 
 const { createClient } = require('@supabase/supabase-js');
+const ws = require('ws');
 
 // Standard CORS headers — applied to every response
 const CORS_HEADERS = {
@@ -61,7 +62,8 @@ exports.handler = async (event) => {
   // Initialise Supabase with service role key (server-side only)
   const supabase = createClient(
     process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY
+    process.env.SUPABASE_SERVICE_KEY,
+    { realtime: { transport: ws } }
   );
 
   try {

@@ -11,6 +11,7 @@
  */
 
 const { createClient } = require('@supabase/supabase-js');
+const ws = require('ws');
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -55,7 +56,8 @@ exports.handler = async (event) => {
 
   const supabase = createClient(
     process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY
+    process.env.SUPABASE_SERVICE_KEY,
+    { realtime: { transport: ws } }
   );
 
   // Fetch firm by token

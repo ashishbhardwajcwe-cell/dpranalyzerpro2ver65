@@ -31,6 +31,7 @@ const fs   = require('fs');
 const path = require('path');
 const Anthropic = require('@anthropic-ai/sdk');
 const { createClient } = require('@supabase/supabase-js');
+const ws = require('ws');
 const XLSX = require('xlsx');
 const mammoth = require('mammoth');
 const officeParser = require('officeparser');
@@ -249,7 +250,7 @@ exports.handler = async (event) => {
   }
 
   // Initialise clients
-  const supabase  = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+  const supabase  = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { realtime: { transport: ws } });
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
   try {
