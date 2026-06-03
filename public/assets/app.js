@@ -63,7 +63,10 @@ async function callAnalyze(payload) {
   try {
     return JSON.parse(text);
   } catch {
-    // Function returned non-JSON — likely a timeout or crash
+    // Function returned non-JSON — infrastructure-level error
+    if (res.status === 413) {
+      return { error: 'File too large. Maximum supported size is 4 MB. Please split the document into smaller sections.' };
+    }
     if (res.status === 504 || res.status === 502) {
       return { error: 'Analysis timed out. Please try a smaller document or split it into sections.' };
     }

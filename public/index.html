@@ -94,7 +94,7 @@
       >
         <div class="upload-icon">📄</div>
         <h3>Drop your DPR document here or click to browse</h3>
-        <p>PDF, Excel, Word, PowerPoint, CSV, Text — up to 20MB</p>
+        <p>PDF, Excel, Word, PowerPoint, CSV, Text — up to 4 MB</p>
         <input
           type="file"
           id="file-input"
@@ -311,10 +311,22 @@
 
   const ACCEPTED_EXTENSIONS = ['.pdf','.xlsx','.xls','.csv','.doc','.docx','.ppt','.pptx','.txt'];
 
+  // Netlify synchronous function limit is 6 MB for the full request body.
+  // Base64 encoding adds ~33% overhead, so max original file size ≈ 4 MB.
+  const MAX_FILE_BYTES = 4 * 1024 * 1024; // 4 MB
+
   function processFile(file) {
     const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
     if (!ACCEPTED_EXTENSIONS.includes(ext)) {
       showFormError(`Unsupported file type "${ext}". Accepted formats: PDF, Excel, Word, PowerPoint, CSV, Text.`);
+      return;
+    }
+
+    if (file.size > MAX_FILE_BYTES) {
+      showFormError(
+        `File too large (${formatBytes(file.size)}). Maximum supported size is 4 MB. ` +
+        `For large Excel or Word documents, split the document into smaller sections and analyze each separately.`
+      );
       return;
     }
 
