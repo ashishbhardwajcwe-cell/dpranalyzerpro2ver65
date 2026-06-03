@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AURIS DPR Analyzer — Login</title>
+  <meta name="description" content="AURIS PRIVATE LIMITED — AI-powered DPR Compliance Analyzer for Highway Projects" />
+  <link rel="stylesheet" href="/assets/styles.css" />
+  <style>
+    /* Subtle background pattern */
+    body {
+      background-color: #f0ede8;
+      background-image: radial-gradient(circle at 25% 25%, rgba(200,168,78,0.06) 0%, transparent 60%),
+                        radial-gradient(circle at 75% 75%, rgba(6,14,26,0.04) 0%, transparent 60%);
+    }
+  </style>
+</head>
+<body>
+
+<main class="login-page">
+  <div class="login-card">
+
+    <!-- Logo — REPLACE THIS WITH ACTUAL AURIS LOGO FILE at public/assets/auris-logo.png -->
+    <div class="logo-area">
+      <img
+        src="/assets/auris-logo.png"
+        alt="AURIS PRIVATE LIMITED"
+        onerror="this.style.display='none'; document.getElementById('logo-fallback').style.display='block';"
+      />
+      <div id="logo-fallback" style="display:none; margin-bottom:1.25rem;">
+        <div style="font-family:'Cormorant Garamond',serif; font-size:2.2rem; font-weight:700; color:#060e1a; letter-spacing:0.08em;">
+          AURIS
+        </div>
+        <div style="font-size:0.65rem; letter-spacing:0.2em; color:#C8A84E; text-transform:uppercase; font-weight:600;">
+          PRIVATE LIMITED
+        </div>
+      </div>
+    </div>
+
+    <h1>DPR Compliance Analyzer</h1>
+    <p class="company-name">AURIS PRIVATE LIMITED</p>
+
+    <hr class="divider" />
+
+    <form id="login-form" novalidate>
+      <div class="form-group">
+        <label for="token-input">Enter Your Access Token</label>
+        <input
+          type="text"
+          id="token-input"
+          placeholder="e.g. AURIS-FIRM-XXXX"
+          autocomplete="off"
+          autocapitalize="characters"
+          spellcheck="false"
+          required
+        />
+      </div>
+
+      <button type="submit" class="btn btn-primary" style="width:100%; margin-top:0.5rem;" id="login-btn">
+        Access Application
+      </button>
+
+      <div id="login-message" style="display:none;" class="alert"></div>
+    </form>
+
+    <div id="success-info" class="alert alert-success hidden" style="text-align:left;">
+      <strong>Welcome!</strong><br/>
+      <span id="firm-name-msg"></span><br/>
+      <small id="analyses-msg"></small>
+    </div>
+
+  </div>
+
+  <footer class="login-footer">
+    <a href="https://www.auris8.com" target="_blank" rel="noopener" style="color:inherit;">www.auris8.com</a>
+    &nbsp;|&nbsp; CIN: U70200HR2026PTC141922
+    &nbsp;|&nbsp; <a href="mailto:auris8.office@gmail.com" style="color:inherit;">auris8.office@gmail.com</a>
+  </footer>
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // If already logged in, go straight to the app
+  const existingToken = Session.get('token');
+  if (existingToken) {
+    window.location.href = '/index.html';
+    return;
+  }
+
+  const form    = document.getElementById('login-form');
+  const msgBox  = document.getElementById('login-message');
+  const btn     = document.getElementById('login-btn');
+  const successBox = document.getElementById('success-info');
+
+  function showMessage(text, type) {
+    msgBox.textContent = text;
+    msgBox.className   = 'alert alert-' + type;
+    msgBox.style.display = 'block';
+  }
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+
+    const token = document.getElementById('token-input').value.trim().toUpperCase();
+    if (!token) {
+      showMessage('Please enter your access token.', 'error');
+      return;
+    }
+
+    btn.disabled    = true;
+    btn.textContent = 'Verifying…';
+    msgBox.style.display = 'none';
+
+    try {
+      const data = await callAuth(token);
+
+      if (data.valid) {
+        // Store in sessionStorage (never localStorage)
+        Session.set('token', token);
+        Session.set('firm_name', data.firm_name);
+        Session.set('analyses_remaining', data.analyses_remaining);
+        Session.set('expiry_date', data.expiry_date);
+
+        // Show success message
+        successBox.classList.remove('hidden');
+        document.getElementById('firm-name-msg').textContent = 'Firm: ' + data.firm_name;
+        document.getElementById('analyses-msg').textContent  =
+          'Analyses remaining: ' + data.analyses_remaining +
+          (data.expiry_date ? ' · Expires: ' + formatDate(data.expiry_date) : '');
+
+        btn.textContent = 'Redirecting…';
+
+        setTimeout(() => {
+          window.location.href = '/index.html';
+        }, 1800);
+      } else {
+        showMessage(data.message || 'Invalid token. Please try again.', 'error');
+        btn.disabled    = false;
+        btn.textContent = 'Access Application';
+      }
+    } catch (err) {
+      showMessage('Connection error. Please check your internet and retry.', 'error');
+      btn.disabled    = false;
+      btn.textContent = 'Access Application';
+    }
+  });
+
+  // Submit on Enter key in token field
+  document.getElementById('token-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') form.dispatchEvent(new Event('submit'));
+  });
+})();
+</script>
+
+</body>
+</html>
