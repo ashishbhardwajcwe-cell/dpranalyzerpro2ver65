@@ -359,18 +359,19 @@ exports.handler = async (event) => {
     // Token-budget strategy — NO count_tokens API calls (they add 4-6s of
     // overhead and push us past Netlify's 26-second function limit).
     //
-    // Instead we use character-length thresholds calibrated to observed data:
-    // your DPR spreadsheets tokenise at roughly 10-20 chars/token for dense
-    // numeric CSV.  IRC reference files = ~57K tokens = ~220K chars overhead.
+    // Calibration from observed data: DPR BOQ spreadsheets tokenise at
+    // ~2.5 chars/token (dense numeric CSV with short numbers and commas).
+    // IRC reference files = ~57K tokens = ~220K chars overhead.
     //
-    // Thresholds (conservative — use 10 chars/token safety factor):
-    //   > IRC_DROP_CHARS  → drop IRC refs (frees ~57K tokens; model uses training)
-    //   > DOC_TRIM_CHARS  → hard-trim the document to DOC_TRIM_CHARS chars
+    // Thresholds:
+    //   > IRC_DROP_CHARS → drop IRC refs (frees ~57K tokens; model uses training)
+    //   > DOC_TRIM_CHARS → hard-trim document
     //
-    // At 10 chars/token:  DOC_TRIM_CHARS / 10 = 150K tokens + 8K output = 158K total < 200K ✓
-    // At 20 chars/token:  same chars / 20  =  75K tokens → even more comfortable ✓
-    const IRC_DROP_CHARS = 500_000;    // ~50K+ doc tokens → IRC overhead becomes a risk
-    const DOC_TRIM_CHARS = 1_500_000;  // hard cap: ~150K tokens at 10 chars/token
+    // At 2.5 chars/token:
+    //   IRC_DROP_CHARS: 100K chars → 40K doc tokens + 57K IRC + 6K = 103K total ✓
+    //   DOC_TRIM_CHARS: 450K chars → 180K doc tokens + 6K overhead = 186K total < 200K ✓
+    const IRC_DROP_CHARS = 100_000;   // drop IRC for any real DPR document
+    const DOC_TRIM_CHARS = 450_000;   // hard cap — keeps total under 200K at 2.5 chars/token
 
     let truncationNotice = '';
     let ircDropped       = false;
