@@ -407,12 +407,21 @@
       };
 
       if (fileType === 'excel') {
-        // Parse every sheet in the browser and render each as CSV text
+        // Parse every sheet in the browser and render each as compact CSV text.
+        // We strip blank rows, trailing empty cells, and comma-only padding so a
+        // large spreadsheet shrinks dramatically WITHOUT losing real data —
+        // this keeps the prompt within the model's token limit.
         const buf = await selectedFile.arrayBuffer();
         const workbook = XLSX.read(new Uint8Array(buf), { type: 'array' });
         payload.document_text = workbook.SheetNames.map(function (name) {
-          return '=== Sheet: ' + name + ' ===\n' + XLSX.utils.sheet_to_csv(workbook.Sheets[name]);
-        }).join('\n\n');
+          // blankrows:false drops empty rows; strip:true removes trailing empty cells
+          var csv = XLSX.utils.sheet_to_csv(workbook.Sheets[name], { blankrows: false, strip: true });
+          // Remove any remaining rows that are only commas/whitespace (Excel padding)
+          csv = csv.split('\n').filter(function (line) {
+            return line.replace(/[,\s]/g, '').length > 0;
+          }).join('\n').trim();
+          return csv ? '=== Sheet: ' + name + ' ===\n' + csv : '';
+        }).filter(Boolean).join('\n\n');  // drop empty sheets entirely
       } else if (fileType === 'csv' || fileType === 'text') {
         payload.document_text = await fileToText(selectedFile);
       } else {

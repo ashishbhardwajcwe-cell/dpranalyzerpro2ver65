@@ -366,19 +366,38 @@ ${ircSection}
 
 Analyze the document thoroughly and return the compliance findings in the exact JSON format specified.`;
 
+    // Token-budget guard. Claude's context window is 200K tokens and must hold
+    // the system prompt + IRC references + document + the model's output. For a
+    // text document that is too large (e.g. a big spreadsheet), trim it to fit
+    // and report how much was analyzed instead of letting the API reject it.
+    // ~3.8 chars per token is a safe heuristic for this CSV/markdown content.
+    const CONTEXT_WINDOW    = 200000;
+    const MAX_OUTPUT_TOKENS = 16000;   // output budget — ample for 15-20 findings
+    const SAFETY_MARGIN     = 8000;
+    const CHARS_PER_TOKEN   = 3.8;
+    const maxInputChars = (CONTEXT_WINDOW - MAX_OUTPUT_TOKENS - SAFETY_MARGIN) * CHARS_PER_TOKEN;
+
+    let truncationNotice = '';
+
+    function fitDocumentText(rawText) {
+      // Chars already consumed by everything except the document body
+      const overheadChars = SYSTEM_PROMPT.length + baseUserText.length + 256;
+      const docBudget = Math.max(0, Math.floor(maxInputChars - overheadChars));
+      if (rawText.length <= docBudget) return rawText;
+
+      const keptPct = Math.max(1, Math.round((docBudget / rawText.length) * 100));
+      truncationNotice =
+        `The uploaded document was very large (${(rawText.length / (1024 * 1024)).toFixed(1)} MB of text); ` +
+        `approximately the first ${keptPct}% was analyzed to stay within the model's size limit. ` +
+        `For complete coverage, split the document into smaller files and analyze each separately.`;
+      return rawText.slice(0, docBudget) +
+        `\n\n=== [DOCUMENT TRUNCATED — about ${100 - keptPct}% omitted due to size limits] ===`;
+    }
+
     let messageContent;
 
-    if (documentText) {
-      // Pre-extracted text (Excel/CSV/Text converted to text in the browser).
-      // Use it directly — no server-side parsing required.
-      messageContent = [
-        {
-          type: 'text',
-          text: `${baseUserText}\n\n=== DOCUMENT CONTENT ===\n${documentText}`,
-        },
-      ];
-    } else if (fileType === 'pdf') {
-      // PDFs go to Anthropic as a native base64 document
+    if (!documentText && fileType === 'pdf') {
+      // PDFs go to Anthropic as a native base64 document (no text trimming)
       messageContent = [
         {
           type: 'document',
@@ -391,25 +410,37 @@ Analyze the document thoroughly and return the compliance findings in the exact 
         { type: 'text', text: baseUserText },
       ];
     } else {
-      // Word / PowerPoint (or any legacy base64 upload, including old clients
-      // sending Excel): extract text server-side, send as text content.
-      const docBuffer = Buffer.from(documentBase64, 'base64');
-      const { text: extractedText, error: extractError } = await extractTextFromFile(docBuffer, documentName, fileType);
+      // Text-based path: Excel/CSV/Text arrive as document_text; Word/PPT (and
+      // any legacy base64 upload) are extracted server-side. Either way, trim
+      // to the token budget before sending.
+      let docText;
+      if (documentText) {
+        docText = documentText;
+      } else {
+        const docBuffer = Buffer.from(documentBase64, 'base64');
+        const { text: extractedText, error: extractError } = await extractTextFromFile(docBuffer, documentName, fileType);
 
-      if (extractError || !extractedText) {
-        return {
-          statusCode: 422,
-          headers: CORS_HEADERS,
-          body: JSON.stringify({
-            error: extractError || `Could not extract content from ${path.extname(documentName)} file. Please check the file is not corrupted.`,
-          }),
-        };
+        if (extractError || !extractedText) {
+          return {
+            statusCode: 422,
+            headers: CORS_HEADERS,
+            body: JSON.stringify({
+              error: extractError || `Could not extract content from ${path.extname(documentName)} file. Please check the file is not corrupted.`,
+            }),
+          };
+        }
+        docText = extractedText;
+      }
+
+      docText = fitDocumentText(docText);
+      if (truncationNotice) {
+        console.log('analyze.js: document truncated to fit token budget —', truncationNotice);
       }
 
       messageContent = [
         {
           type: 'text',
-          text: `${baseUserText}\n\n=== DOCUMENT CONTENT ===\n${extractedText}`,
+          text: `${baseUserText}\n\n=== DOCUMENT CONTENT ===\n${docText}`,
         },
       ];
     }
@@ -420,7 +451,7 @@ Analyze the document thoroughly and return the compliance findings in the exact 
     try {
       const stream = await anthropic.messages.stream({
         model:      'claude-haiku-4-5-20251001',
-        max_tokens: 30000,
+        max_tokens: MAX_OUTPUT_TOKENS,
         system:     SYSTEM_PROMPT,
         messages:   [{ role: 'user', content: messageContent }],
       });
@@ -472,6 +503,15 @@ Analyze the document thoroughly and return the compliance findings in the exact 
     // Ensure project_name is always set
     if (!analysisResult.project_name) {
       analysisResult.project_name = projectName;
+    }
+
+    // If the document was trimmed to fit the token budget, tell the user.
+    if (truncationNotice) {
+      analysisResult.truncated = true;
+      analysisResult.truncation_notice = truncationNotice;
+      analysisResult.executive_summary =
+        (analysisResult.executive_summary ? analysisResult.executive_summary + ' ' : '') +
+        '[' + truncationNotice + ']';
     }
 
     // Step 8: ONLY on success — increment usage and write log
