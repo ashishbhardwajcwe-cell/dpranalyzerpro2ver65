@@ -46,6 +46,10 @@ exports.handler = async (event) => {
     };
   }
 
+  console.log('SUPABASE_URL exists:', !!process.env.SUPABASE_URL);
+  console.log('SUPABASE_SERVICE_KEY exists:', !!process.env.SUPABASE_SERVICE_KEY);
+  console.log('Token received:', token);
+
   if (!token) {
     return {
       statusCode: 400,
