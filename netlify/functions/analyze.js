@@ -6,15 +6,17 @@
  * are NEVER exposed to the frontend. All analysis logic lives here only.
  *
  * Input  (POST JSON):
- *   { token, document_base64, document_name, project_name }
+ *   { token, document_name, project_name, file_type,
+ *     document_text? | document_base64? }
  *
  * Supported file types:
- *   PDF              → sent as base64 document to Anthropic API
- *   Excel (.xlsx/.xls) → parsed with xlsx, every sheet converted to CSV text
- *   CSV              → read as plain text
- *   Word (.doc/.docx) → text extracted with officeparser
- *   PowerPoint (.ppt/.pptx) → text extracted with officeparser
- *   Text (.txt)      → read as plain text
+ *   Excel (.xlsx/.xls) → converted to CSV text IN THE BROWSER (SheetJS),
+ *                        arrives as document_text
+ *   CSV / Text (.csv/.txt) → read as text in the browser, arrives as document_text
+ *   PDF              → arrives as document_base64, sent as base64 document to Anthropic
+ *   Word (.doc/.docx) → arrives as document_base64, text extracted server-side
+ *   PowerPoint (.ppt/.pptx) → arrives as document_base64, text extracted server-side
+ *   (Legacy base64 Excel uploads still parse server-side with xlsx for compatibility.)
  *
  * Flow:
  *   1. Validate token + check remaining analyses
@@ -164,52 +166,65 @@ async function checkRateLimit(supabase, firmId) {
   return count < 10;
 }
 
-// System prompt embedded server-side — never sent to frontend
-const SYSTEM_PROMPT = `You are a senior highway design auditor with 20 plus years experience in IRC Codes and MoRTH Specifications 5th Revision. Analyze the provided DPR document for compliance deficiencies in hill and mountain road projects for Border Roads Organisation.
+// System prompt embedded server-side — never sent to frontend.
+// This is the proven "model 63" prompt — do not alter the wording.
+const SYSTEM_PROMPT = `You are an expert DPR (Detailed Project Report) reviewer for Road/Highway infrastructure projects in India, particularly hill and mountain roads for Border Roads Organisation. Analyze the DPR document uploaded against the IRC reference documents provided and standard regulatory requirements.
 
-For each finding provide:
-- clause_reference: specific IRC or MoRTH clause number from reference documents provided
-- description: detailed explanation of what is wrong
-- severity: critical, major, minor, or observation
-- recommendation: specific corrective action
-- page_reference: location in the DPR document
+Perform a thorough compliance check and identify ALL deficiencies, errors, missing elements, and non-compliance issues.
 
-Severity definitions:
-critical means safety hazards, structural failures, major code violations
-major means significant non-compliance, design errors, missing calculations
-minor means incomplete data, minor deviations, formatting issues
-observation means best practice suggestions and improvements
+IMPORTANT: If the DPR data is in spreadsheet/tabular format, carefully analyze the data in each sheet - check quantities, rates, specifications, design parameters, etc.
 
-Check all engineering disciplines equally: pavement design, geometric design, drainage, bridges, geotechnical, safety, traffic, environmental, cost estimation, materials.
-
-Cite ONLY clause numbers that appear in the reference documents provided. Do not hallucinate clause numbers.
-
-Return ONLY valid JSON with no markdown backticks:
+Respond ONLY with a valid JSON object (no markdown, no backticks, no explanation before or after) in this exact format:
 {
   "project_name": "string",
   "analysis_date": "string in DD/MM/YYYY format",
+  "compliance_score": number 0 to 100,
+  "executive_summary": "2-3 sentence overall assessment of DPR quality and completeness",
   "total_findings": number,
   "critical_count": number,
   "major_count": number,
   "minor_count": number,
   "observation_count": number,
-  "executive_summary": "2 to 3 sentence summary",
-  "compliance_score": number between 0 and 100,
   "findings": [
     {
       "finding_number": number,
-      "clause_reference": "string",
-      "severity": "string",
-      "title": "string",
-      "description": "string",
-      "recommendation": "string",
-      "page_reference": "string"
+      "severity": "critical|major|minor|observation",
+      "title": "Short clear title of the issue",
+      "clause_reference": "Reference clause from provided documents (e.g. IRC:37 Cl.4.2, MoRTH Cl.300)",
+      "description": "Detailed explanation of what is wrong or missing",
+      "recommendation": "Specific actionable fix",
+      "page_reference": "Location in the DPR document"
     }
   ],
   "overall_recommendation": "string"
 }
 
-Generate 15 to 20 findings with natural severity distribution across all four levels.`;
+Severity definitions:
+- critical: Missing mandatory components, safety hazards, major code violations, structural concerns
+- major: Significant non-compliance, wrong methodology, missing calculations, incorrect design parameters
+- minor: Incomplete data, minor deviations, formatting issues, unclear descriptions
+- observation: Suggestions for improvement, best practice recommendations, nice-to-have items
+
+Thoroughly check for:
+1. Traffic survey data - adequacy, methodology, PCU factors, design traffic estimation (IRC:SP:19)
+2. Geometric design - horizontal/vertical alignment, cross-section, sight distance (IRC:73/IRC:86)
+3. Pavement design - CBR values, traffic loading, layer thickness, methodology (IRC:37/IRC:58)
+4. Drainage design - hydraulic calculations, cross-drainage structures, side drains (IRC:SP:42)
+5. Road safety provisions - audit, signage, markings, crash barriers (IRC:SP:55)
+6. Environmental assessment - EIA/EMP, NOCs, clearances
+7. Land acquisition - details, ROW, encumbrances
+8. Cost estimation - BOQ completeness, rate analysis, contingency, price escalation
+9. Material specifications - compliance with MoRTH 5th Revision
+10. Bridge/culvert design - loading, foundations, scour depth (IRC:6/IRC:112/IRC:SP:13)
+11. Survey and investigation - topographic, soil, geological, hydrological
+12. Drawings - GAD, L-section, cross-sections, typical details
+13. Utility shifting and relocation plans
+14. Implementation schedule - milestones, critical path
+15. Quality control and assurance plan
+
+Cite ONLY clause numbers that appear in the reference documents provided. Do not hallucinate clause numbers.
+
+Generate 15 to 20 findings with natural severity distribution across all four levels. Every real DPR has issues. Be thorough and evaluate all engineering disciplines equally.`;
 
 exports.handler = async (event) => {
   // Handle CORS preflight
@@ -226,13 +241,18 @@ exports.handler = async (event) => {
   }
 
   // Parse request body
-  let token, documentBase64, documentName, projectName;
+  // The frontend may send EITHER document_text (Excel/CSV/Text already
+  // converted to text in the browser) OR document_base64 (PDF/Word/PPT raw
+  // bytes). file_type is a hint from the client describing the original format.
+  let token, documentBase64, documentText, documentName, projectName, fileTypeHint;
   try {
     const body = JSON.parse(event.body || '{}');
-    token        = (body.token || '').trim();
+    token          = (body.token || '').trim();
     documentBase64 = body.document_base64 || '';
+    documentText   = body.document_text || '';
     documentName   = (body.document_name || 'Unnamed Document').trim();
     projectName    = (body.project_name || 'Unnamed Project').trim();
+    fileTypeHint   = (body.file_type || '').trim().toLowerCase();
   } catch {
     return {
       statusCode: 400,
@@ -241,7 +261,7 @@ exports.handler = async (event) => {
     };
   }
 
-  if (!token || !documentBase64) {
+  if (!token || (!documentBase64 && !documentText)) {
     return {
       statusCode: 400,
       headers: CORS_HEADERS,
@@ -332,9 +352,9 @@ exports.handler = async (event) => {
       ? `\n\n=== IRC AND MoRTH REFERENCE DOCUMENTS ===\n${ircContent}`
       : '\n\n[Note: IRC reference files not yet loaded. Apply general IRC/MoRTH knowledge.]';
 
-    // Step 5: Determine file type and build the appropriate message content
-    const fileType = getFileType(documentName);
-    const docBuffer = Buffer.from(documentBase64, 'base64');
+    // Step 5: Determine file type and build the appropriate message content.
+    // Prefer the client-supplied file_type hint; fall back to the extension.
+    const fileType = fileTypeHint || getFileType(documentName);
 
     const baseUserText = `Analyze the following DPR document for compliance.
 
@@ -348,7 +368,16 @@ Analyze the document thoroughly and return the compliance findings in the exact 
 
     let messageContent;
 
-    if (fileType === 'pdf') {
+    if (documentText) {
+      // Pre-extracted text (Excel/CSV/Text converted to text in the browser).
+      // Use it directly — no server-side parsing required.
+      messageContent = [
+        {
+          type: 'text',
+          text: `${baseUserText}\n\n=== DOCUMENT CONTENT ===\n${documentText}`,
+        },
+      ];
+    } else if (fileType === 'pdf') {
       // PDFs go to Anthropic as a native base64 document
       messageContent = [
         {
@@ -362,7 +391,9 @@ Analyze the document thoroughly and return the compliance findings in the exact 
         { type: 'text', text: baseUserText },
       ];
     } else {
-      // All other formats: extract text server-side, send as text content
+      // Word / PowerPoint (or any legacy base64 upload, including old clients
+      // sending Excel): extract text server-side, send as text content.
+      const docBuffer = Buffer.from(documentBase64, 'base64');
       const { text: extractedText, error: extractError } = await extractTextFromFile(docBuffer, documentName, fileType);
 
       if (extractError || !extractedText) {

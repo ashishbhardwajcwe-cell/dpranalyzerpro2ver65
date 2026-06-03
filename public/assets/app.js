@@ -65,7 +65,7 @@ async function callAnalyze(payload) {
   } catch {
     // Function returned non-JSON — infrastructure-level error
     if (res.status === 413) {
-      return { error: 'File too large. Maximum supported size is 4 MB. Please split the document into smaller sections.' };
+      return { error: 'File too large to upload. For very large PDF/Word/PowerPoint files, split the document into smaller sections and analyze each separately.' };
     }
     if (res.status === 504 || res.status === 502) {
       return { error: 'Analysis timed out. Please try a smaller document or split it into sections.' };

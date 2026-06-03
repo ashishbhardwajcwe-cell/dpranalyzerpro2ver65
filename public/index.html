@@ -94,7 +94,7 @@
       >
         <div class="upload-icon">📄</div>
         <h3>Drop your DPR document here or click to browse</h3>
-        <p>PDF, Excel, Word, PowerPoint, CSV, Text — up to 4 MB</p>
+        <p>PDF, Excel, Word, PowerPoint, CSV, Text files supported</p>
         <input
           type="file"
           id="file-input"
@@ -256,6 +256,8 @@
 
 </main>
 
+<!-- SheetJS — parses Excel files in the browser into CSV text before upload -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
 <script src="/assets/app.js"></script>
 <script>
 (function () {
@@ -311,22 +313,24 @@
 
   const ACCEPTED_EXTENSIONS = ['.pdf','.xlsx','.xls','.csv','.doc','.docx','.ppt','.pptx','.txt'];
 
-  // Netlify synchronous function limit is 6 MB for the full request body.
-  // Base64 encoding adds ~33% overhead, so max original file size ≈ 4 MB.
-  const MAX_FILE_BYTES = 4 * 1024 * 1024; // 4 MB
+  // Returns the file category from its extension.
+  // Excel/CSV/Text are converted to text in the browser, so even large
+  // files (up to ~19 MB) shrink to a few MB of text before upload.
+  function clientFileType(name) {
+    const ext = name.substring(name.lastIndexOf('.')).toLowerCase();
+    if (ext === '.pdf')                    return 'pdf';
+    if (ext === '.xlsx' || ext === '.xls') return 'excel';
+    if (ext === '.csv')                    return 'csv';
+    if (ext === '.doc' || ext === '.docx') return 'word';
+    if (ext === '.ppt' || ext === '.pptx') return 'ppt';
+    if (ext === '.txt')                    return 'text';
+    return 'unknown';
+  }
 
   function processFile(file) {
     const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
     if (!ACCEPTED_EXTENSIONS.includes(ext)) {
       showFormError(`Unsupported file type "${ext}". Accepted formats: PDF, Excel, Word, PowerPoint, CSV, Text.`);
-      return;
-    }
-
-    if (file.size > MAX_FILE_BYTES) {
-      showFormError(
-        `File too large (${formatBytes(file.size)}). Maximum supported size is 4 MB. ` +
-        `For large Excel or Word documents, split the document into smaller sections and analyze each separately.`
-      );
       return;
     }
 
@@ -336,8 +340,19 @@
     document.getElementById('file-info-box').classList.remove('hidden');
     document.getElementById('upload-zone').style.display = 'none';
 
+    // Non-blocking advisory for large binary formats that are sent as-is.
+    // (Excel/CSV/Text are converted to compact text client-side, so no warning.)
+    const type = clientFileType(file.name);
+    const MB = 1024 * 1024;
+    if (type === 'pdf' && file.size > 10 * MB) {
+      showFormError(`Large PDF (${formatBytes(file.size)}) — analysis may be slow. You can still proceed.`);
+    } else if ((type === 'word' || type === 'ppt') && file.size > 5 * MB) {
+      showFormError(`Large file (${formatBytes(file.size)}) — analysis may be slow. You can still proceed.`);
+    } else {
+      hideFormError();
+    }
+
     updateAnalyzeButton();
-    hideFormError();
   }
 
   window.clearFile = function () {
@@ -356,6 +371,16 @@
 
   document.getElementById('project-name').addEventListener('input', updateAnalyzeButton);
 
+  // ---- Read a file as plain text (for CSV / TXT) ----
+  function fileToText(file) {
+    return new Promise(function (resolve, reject) {
+      const reader = new FileReader();
+      reader.onload  = function () { resolve(reader.result); };
+      reader.onerror = reject;
+      reader.readAsText(file);
+    });
+  }
+
   // ---- Run analysis ----
 
   window.runAnalysis = async function () {
@@ -370,14 +395,30 @@
     document.getElementById('analyze-btn').disabled = true;
 
     try {
-      const documentBase64 = await fileToBase64(selectedFile);
+      // Convert the file BEFORE sending so large spreadsheets/CSV/text shrink
+      // to compact text that fits within Netlify's function payload limit.
+      const fileType = clientFileType(selectedFile.name);
 
       const payload = {
         token,
-        document_base64: documentBase64,
-        document_name:   selectedFile.name,
-        project_name:    projectName,
+        document_name: selectedFile.name,
+        project_name:  projectName,
+        file_type:     fileType,
       };
+
+      if (fileType === 'excel') {
+        // Parse every sheet in the browser and render each as CSV text
+        const buf = await selectedFile.arrayBuffer();
+        const workbook = XLSX.read(new Uint8Array(buf), { type: 'array' });
+        payload.document_text = workbook.SheetNames.map(function (name) {
+          return '=== Sheet: ' + name + ' ===\n' + XLSX.utils.sheet_to_csv(workbook.Sheets[name]);
+        }).join('\n\n');
+      } else if (fileType === 'csv' || fileType === 'text') {
+        payload.document_text = await fileToText(selectedFile);
+      } else {
+        // pdf | word | ppt → send raw bytes as base64, parsed server-side
+        payload.document_base64 = await fileToBase64(selectedFile);
+      }
 
       const data = await callAnalyze(payload);
 
