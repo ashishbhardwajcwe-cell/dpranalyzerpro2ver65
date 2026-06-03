@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.local
+irc-data/*.md
+irc-data/*.txt
+!irc-data/.gitkeep
+!irc-data/README.txt
+.DS_Store
+*.log
+dist/

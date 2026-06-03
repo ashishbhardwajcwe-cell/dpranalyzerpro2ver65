@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AURIS Admin — DPR Analyzer</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body style="background:#f0ede8;">
+
+<!-- ========== ADMIN LOGIN OVERLAY ========== -->
+<div id="admin-login-overlay" style="
+  position:fixed; inset:0; background:#060e1a;
+  display:flex; align-items:center; justify-content:center; z-index:999;
+">
+  <div style="background:white; border-radius:12px; padding:2.5rem 2rem; width:100%; max-width:380px; text-align:center; box-shadow:0 8px 40px rgba(0,0,0,0.4);">
+    <!-- Logo — REPLACE THIS WITH ACTUAL AURIS LOGO FILE at public/assets/auris-logo.png -->
+    <img
+      src="/assets/auris-logo.png"
+      alt="AURIS"
+      style="height:80px; object-fit:contain; margin-bottom:1rem;"
+      onerror="this.style.display='none';"
+    />
+    <h2 style="font-family:'Cormorant Garamond',serif; font-size:1.8rem; color:#060e1a; margin-bottom:0.25rem;">
+      Admin Dashboard
+    </h2>
+    <p style="color:#C8A84E; font-size:0.75rem; letter-spacing:0.12em; font-weight:600; text-transform:uppercase; margin-bottom:1.5rem;">
+      AURIS PRIVATE LIMITED
+    </p>
+
+    <div class="form-group">
+      <label for="admin-secret-input">Admin Secret Key</label>
+      <input
+        type="password"
+        id="admin-secret-input"
+        placeholder="Enter admin secret"
+        autocomplete="current-password"
+      />
+    </div>
+
+    <button class="btn btn-primary" style="width:100%;" onclick="adminLogin()">
+      Access Admin Panel
+    </button>
+
+    <div id="admin-login-error" class="alert alert-error hidden" style="margin-top:1rem; text-align:left;"></div>
+  </div>
+</div>
+
+<!-- ========== ADMIN PANEL (shown after auth) ========== -->
+<div id="admin-panel" class="hidden">
+
+  <!-- Header -->
+  <header class="admin-header">
+    <div style="display:flex; align-items:center; gap:0.75rem;">
+      <!-- Logo — REPLACE THIS WITH ACTUAL AURIS LOGO FILE at public/assets/auris-logo.png -->
+      <img src="/assets/auris-logo.png" alt="AURIS" style="height:36px; object-fit:contain;" onerror="this.style.display='none';" />
+      <div>
+        <div style="font-family:'Cormorant Garamond',serif; font-size:1.3rem; color:white;">Admin Dashboard</div>
+        <div style="font-size:0.68rem; color:#C8A84E; letter-spacing:0.1em; text-transform:uppercase;">AURIS PRIVATE LIMITED</div>
+      </div>
+    </div>
+    <div style="display:flex; gap:0.75rem; align-items:center;">
+      <button class="btn btn-outline btn-sm" onclick="loadFirms()">Refresh</button>
+      <button class="btn btn-danger btn-sm" onclick="adminLogout()">Logout</button>
+    </div>
+  </header>
+
+  <div class="admin-content">
+
+    <!-- Stats row -->
+    <div class="stats-grid" id="stats-grid">
+      <div class="stat-card">
+        <div class="stat-value" id="stat-total-firms">—</div>
+        <div class="stat-label">Total Firms</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-active-firms">—</div>
+        <div class="stat-label">Active Firms</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-analyses-sold">—</div>
+        <div class="stat-label">Credits Sold</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-analyses-used">—</div>
+        <div class="stat-label">Credits Used</div>
+      </div>
+    </div>
+
+    <!-- Add New Firm Card -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Add New Licensed Firm</h2>
+        <p>Create a new firm account and generate an access token automatically</p>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+        <div class="form-group">
+          <label for="new-firm-name">Firm Name <span style="color:#dc2626">*</span></label>
+          <input type="text" id="new-firm-name" placeholder="e.g. Highway Consultants Pvt. Ltd." />
+        </div>
+        <div class="form-group">
+          <label for="new-contact">Contact Person</label>
+          <input type="text" id="new-contact" placeholder="Full name" />
+        </div>
+        <div class="form-group">
+          <label for="new-email">Email</label>
+          <input type="email" id="new-email" placeholder="contact@firm.com" />
+        </div>
+        <div class="form-group">
+          <label for="new-phone">Phone</label>
+          <input type="tel" id="new-phone" placeholder="+91-XXXXXXXXXX" />
+        </div>
+        <div class="form-group">
+          <label for="new-analyses">Starting Analyses <span style="color:#dc2626">*</span></label>
+          <input type="number" id="new-analyses" placeholder="e.g. 25" min="1" />
+        </div>
+        <div class="form-group">
+          <label for="new-expiry">Expiry Date</label>
+          <input type="date" id="new-expiry" />
+        </div>
+        <div class="form-group">
+          <label for="new-license-type">License Type</label>
+          <select id="new-license-type">
+            <option value="starter">Starter (25 analyses — Rs 25,000)</option>
+            <option value="standard">Standard (75 analyses — Rs 60,000)</option>
+            <option value="enterprise">Enterprise (Annual contract)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="new-notes">Notes</label>
+          <input type="text" id="new-notes" placeholder="Internal notes (optional)" />
+        </div>
+      </div>
+
+      <button class="btn btn-gold" onclick="addFirm()" id="add-firm-btn">
+        Create Firm &amp; Generate Token
+      </button>
+
+      <div id="add-firm-message" class="hidden" style="margin-top:1rem;"></div>
+    </div>
+
+    <!-- Firms Table Card -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Licensed Firms</h2>
+        <p>All firms and their usage statistics</p>
+      </div>
+
+      <div id="firms-loading" style="text-align:center; padding:2rem; color:#888;">
+        Loading firms…
+      </div>
+
+      <div class="table-wrapper" id="firms-table-wrapper" style="display:none;">
+        <table>
+          <thead>
+            <tr>
+              <th>Firm Name</th>
+              <th>Access Token</th>
+              <th>License</th>
+              <th style="text-align:center;">Used / Total</th>
+              <th style="text-align:center;">Remaining</th>
+              <th>Expiry</th>
+              <th style="text-align:center;">Status</th>
+              <th style="text-align:center;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="firms-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Usage Log Modal -->
+    <div id="usage-modal" class="hidden" style="
+      position:fixed; inset:0; background:rgba(6,14,26,0.7);
+      display:flex; align-items:center; justify-content:center; z-index:800; padding:1rem;
+    ">
+      <div style="background:white; border-radius:12px; width:100%; max-width:800px; max-height:80vh; overflow:auto;">
+        <div style="padding:1.25rem 1.5rem; border-bottom:2px solid #C8A84E; display:flex; justify-content:space-between; align-items:center; position:sticky; top:0; background:white;">
+          <h3 style="font-family:'Cormorant Garamond',serif; font-size:1.4rem; color:#060e1a;">
+            Usage Log — <span id="usage-modal-firm-name"></span>
+          </h3>
+          <button class="btn btn-sm btn-outline" onclick="closeUsageModal()">Close</button>
+        </div>
+        <div style="padding:1rem 1.5rem;">
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date &amp; Time</th>
+                  <th>Project Name</th>
+                  <th>Document</th>
+                  <th style="text-align:center;">Before</th>
+                  <th style="text-align:center;">After</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="usage-log-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Top-up Modal -->
+    <div id="topup-modal" class="hidden" style="
+      position:fixed; inset:0; background:rgba(6,14,26,0.7);
+      display:flex; align-items:center; justify-content:center; z-index:800; padding:1rem;
+    ">
+      <div style="background:white; border-radius:12px; padding:2rem; width:100%; max-width:400px;">
+        <h3 style="font-family:'Cormorant Garamond',serif; font-size:1.5rem; color:#060e1a; margin-bottom:0.25rem;">
+          Top Up Credits
+        </h3>
+        <p style="color:#666; font-size:0.85rem; margin-bottom:1.25rem;" id="topup-firm-name-label"></p>
+        <input type="hidden" id="topup-firm-id" />
+        <div class="form-group">
+          <label for="topup-amount">Number of analyses to add</label>
+          <input type="number" id="topup-amount" min="1" placeholder="e.g. 25" />
+        </div>
+        <div style="display:flex; gap:0.75rem;">
+          <button class="btn btn-gold" onclick="doTopup()">Add Credits</button>
+          <button class="btn btn-outline" onclick="closeTopupModal()">Cancel</button>
+        </div>
+        <div id="topup-message" class="hidden" style="margin-top:1rem;"></div>
+      </div>
+    </div>
+
+  </div><!-- end admin-content -->
+</div><!-- end admin-panel -->
+
+<script src="/assets/app.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  let adminSecret = '';
+
+  // ---- Admin Login ----
+  window.adminLogin = async function () {
+    const secret = document.getElementById('admin-secret-input').value.trim();
+    if (!secret) return;
+
+    // Test the secret with a list_firms call
+    const data = await callAdmin('list_firms', {}, secret);
+    if (data.error) {
+      const err = document.getElementById('admin-login-error');
+      err.textContent = data.error;
+      err.classList.remove('hidden');
+      return;
+    }
+
+    // Secret is valid
+    adminSecret = secret;
+    document.getElementById('admin-login-overlay').style.display = 'none';
+    document.getElementById('admin-panel').classList.remove('hidden');
+    renderFirmsData(data.firms || []);
+  };
+
+  window.adminLogout = function () {
+    adminSecret = '';
+    document.getElementById('admin-login-overlay').style.display = 'flex';
+    document.getElementById('admin-panel').classList.add('hidden');
+    document.getElementById('admin-secret-input').value = '';
+  };
+
+  // ---- Load Firms ----
+  window.loadFirms = async function () {
+    document.getElementById('firms-loading').style.display = 'block';
+    document.getElementById('firms-table-wrapper').style.display = 'none';
+    const data = await callAdmin('list_firms', {}, adminSecret);
+    if (data.firms) renderFirmsData(data.firms);
+    document.getElementById('firms-loading').style.display = 'none';
+  };
+
+  function renderFirmsData(firms) {
+    // Update stats
+    const totalFirms   = firms.length;
+    const activeFirms  = firms.filter(f => f.is_active).length;
+    const totalSold    = firms.reduce((s, f) => s + (f.analyses_total || 0), 0);
+    const totalUsed    = firms.reduce((s, f) => s + (f.analyses_used  || 0), 0);
+
+    document.getElementById('stat-total-firms').textContent  = totalFirms;
+    document.getElementById('stat-active-firms').textContent = activeFirms;
+    document.getElementById('stat-analyses-sold').textContent = totalSold;
+    document.getElementById('stat-analyses-used').textContent = totalUsed;
+
+    // Render table
+    const tbody = document.getElementById('firms-tbody');
+    tbody.innerHTML = '';
+
+    firms.forEach(function (f) {
+      const remaining = (f.analyses_total || 0) - (f.analyses_used || 0);
+      const expiryStr = f.expiry_date ? formatDate(f.expiry_date) : '—';
+      const isExpired = f.expiry_date && new Date(f.expiry_date) < new Date();
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>
+          <strong>${escapeHtml(f.firm_name)}</strong>
+          ${f.contact_person ? '<br><small style="color:#888;">' + escapeHtml(f.contact_person) + '</small>' : ''}
+          ${f.email ? '<br><small style="color:#888;">' + escapeHtml(f.email) + '</small>' : ''}
+        </td>
+        <td><code style="font-size:0.8rem; background:#f0ede8; padding:2px 6px; border-radius:4px;">${escapeHtml(f.access_token)}</code></td>
+        <td style="text-transform:capitalize;">${escapeHtml(f.license_type || 'starter')}</td>
+        <td style="text-align:center;">${f.analyses_used || 0} / ${f.analyses_total || 0}</td>
+        <td style="text-align:center; font-weight:700; color:${remaining > 5 ? '#16a34a' : remaining > 0 ? '#ca8a04' : '#dc2626'};">
+          ${remaining}
+        </td>
+        <td style="font-size:0.85rem; color:${isExpired ? '#dc2626' : 'inherit'};">${expiryStr}${isExpired ? ' ⚠' : ''}</td>
+        <td style="text-align:center;">
+          <span class="badge ${f.is_active ? 'badge-active' : 'badge-inactive'}">${f.is_active ? 'Active' : 'Inactive'}</span>
+        </td>
+        <td style="text-align:center; white-space:nowrap;">
+          <button class="btn btn-sm btn-outline" onclick="openTopup('${escapeHtml(f.id)}', '${escapeHtml(f.firm_name)}')" style="margin:2px;">Top Up</button>
+          <button class="btn btn-sm btn-outline" onclick="viewUsage('${escapeHtml(f.id)}', '${escapeHtml(f.firm_name)}')" style="margin:2px;">Usage Log</button>
+          ${f.is_active ? `<button class="btn btn-sm btn-danger" onclick="deactivateFirm('${escapeHtml(f.id)}', '${escapeHtml(f.firm_name)}')" style="margin:2px;">Deactivate</button>` : ''}
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById('firms-table-wrapper').style.display = 'block';
+    document.getElementById('firms-loading').style.display = 'none';
+  }
+
+  // ---- Add Firm ----
+  window.addFirm = async function () {
+    const firmName  = document.getElementById('new-firm-name').value.trim();
+    const analyses  = parseInt(document.getElementById('new-analyses').value, 10);
+
+    if (!firmName || !analyses || analyses < 1) {
+      showAddFirmMessage('Firm name and number of analyses are required.', 'error');
+      return;
+    }
+
+    const btn = document.getElementById('add-firm-btn');
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+
+    const payload = {
+      firm_name:      firmName,
+      contact_person: document.getElementById('new-contact').value.trim() || undefined,
+      email:          document.getElementById('new-email').value.trim()   || undefined,
+      phone:          document.getElementById('new-phone').value.trim()   || undefined,
+      analyses_total: analyses,
+      expiry_date:    document.getElementById('new-expiry').value         || undefined,
+      license_type:   document.getElementById('new-license-type').value,
+      notes:          document.getElementById('new-notes').value.trim()   || undefined,
+    };
+
+    const data = await callAdmin('add_firm', payload, adminSecret);
+
+    btn.disabled = false;
+    btn.textContent = 'Create Firm & Generate Token';
+
+    if (data.success) {
+      showAddFirmMessage(
+        `Firm created! Access token: <strong>${escapeHtml(data.firm.access_token)}</strong> — send this to the client.`,
+        'success'
+      );
+      // Clear form
+      ['new-firm-name','new-contact','new-email','new-phone','new-analyses','new-expiry','new-notes'].forEach(id => {
+        document.getElementById(id).value = '';
+      });
+      loadFirms();
+    } else {
+      showAddFirmMessage(data.error || 'Failed to create firm.', 'error');
+    }
+  };
+
+  function showAddFirmMessage(html, type) {
+    const box = document.getElementById('add-firm-message');
+    box.innerHTML = html;
+    box.className = 'alert alert-' + type;
+    box.classList.remove('hidden');
+  }
+
+  // ---- Top Up Modal ----
+  window.openTopup = function (firmId, firmName) {
+    document.getElementById('topup-firm-id').value = firmId;
+    document.getElementById('topup-firm-name-label').textContent = firmName;
+    document.getElementById('topup-amount').value = '';
+    document.getElementById('topup-message').classList.add('hidden');
+    document.getElementById('topup-modal').classList.remove('hidden');
+  };
+
+  window.closeTopupModal = function () {
+    document.getElementById('topup-modal').classList.add('hidden');
+  };
+
+  window.doTopup = async function () {
+    const firmId  = document.getElementById('topup-firm-id').value;
+    const amount  = parseInt(document.getElementById('topup-amount').value, 10);
+    if (!amount || amount < 1) {
+      showTopupMessage('Enter a valid number of analyses to add.', 'error');
+      return;
+    }
+
+    const data = await callAdmin('topup', { firm_id: firmId, add_analyses: amount }, adminSecret);
+    if (data.success) {
+      showTopupMessage(data.message, 'success');
+      loadFirms();
+      setTimeout(closeTopupModal, 1500);
+    } else {
+      showTopupMessage(data.error || 'Top-up failed.', 'error');
+    }
+  };
+
+  function showTopupMessage(msg, type) {
+    const box = document.getElementById('topup-message');
+    box.textContent = msg;
+    box.className = 'alert alert-' + type;
+    box.classList.remove('hidden');
+  }
+
+  // ---- Deactivate ----
+  window.deactivateFirm = async function (firmId, firmName) {
+    if (!confirm('Deactivate ' + firmName + '? They will no longer be able to log in.')) return;
+    const data = await callAdmin('deactivate', { firm_id: firmId }, adminSecret);
+    if (data.success) {
+      loadFirms();
+    } else {
+      alert('Error: ' + (data.error || 'Failed to deactivate.'));
+    }
+  };
+
+  // ---- Usage Log Modal ----
+  window.viewUsage = async function (firmId, firmName) {
+    document.getElementById('usage-modal-firm-name').textContent = firmName;
+    document.getElementById('usage-log-tbody').innerHTML = '<tr><td colspan="6" style="text-align:center;color:#888;">Loading…</td></tr>';
+    document.getElementById('usage-modal').classList.remove('hidden');
+
+    const data = await callAdmin('get_usage', { firm_id: firmId }, adminSecret);
+    const tbody = document.getElementById('usage-log-tbody');
+    tbody.innerHTML = '';
+
+    if (!data.success || !data.usage_log.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#888;">No usage records found.</td></tr>';
+      return;
+    }
+
+    data.usage_log.forEach(function (entry) {
+      const ts = entry.analysis_timestamp
+        ? new Date(entry.analysis_timestamp).toLocaleString('en-GB')
+        : '—';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="font-size:0.82rem; white-space:nowrap;">${escapeHtml(ts)}</td>
+        <td style="font-size:0.85rem;">${escapeHtml(entry.project_name || '—')}</td>
+        <td style="font-size:0.82rem; color:#666;">${escapeHtml(entry.document_name || '—')}</td>
+        <td style="text-align:center;">${entry.analyses_before ?? '—'}</td>
+        <td style="text-align:center;">${entry.analyses_after  ?? '—'}</td>
+        <td><span class="badge ${entry.status === 'success' ? 'badge-active' : 'badge-inactive'}">${escapeHtml(entry.status || '—')}</span></td>
+      `;
+      tbody.appendChild(tr);
+    });
+  };
+
+  window.closeUsageModal = function () {
+    document.getElementById('usage-modal').classList.add('hidden');
+  };
+
+  // Allow Enter key on admin login
+  document.getElementById('admin-secret-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') adminLogin();
+  });
+
+})();
+</script>
+
+</body>
+</html>

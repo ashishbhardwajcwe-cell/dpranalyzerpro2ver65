@@ -1,0 +1,17 @@
+{
+  "name": "auris-dpr-analyzer",
+  "version": "1.0.0",
+  "description": "AURIS DPR Analyzer - AI-powered highway DPR compliance analysis SaaS",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "@supabase/supabase-js": "^2.49.8"
+  },
+  "scripts": {
+    "dev": "netlify dev",
+    "build": "echo 'No build step required - static site with Netlify Functions'"
+  }
+}

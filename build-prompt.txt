@@ -1,0 +1,462 @@
+Build a complete SaaS application called "AURIS DPR Analyzer" 
+in this repository. The repository may contain old files 
+from a previous version — delete or overwrite ALL existing files 
+completely and start fresh as if empty.
+
+PROJECT OVERVIEW
+
+This is a licensed SaaS web application for AURIS PRIVATE LIMITED. 
+Consultancy firms purchase access tokens with a fixed number of 
+analyses. They upload Highway DPR (Detailed Project Report) PDFs 
+and receive AI-powered compliance analysis against IRC Codes and 
+MoRTH 5th Revision specifications.
+
+COMPANY BRANDING
+
+Company Name: AURIS PRIVATE LIMITED
+CIN: U70200HR2026PTC141922
+Website: www.auris8.com
+Email: auris8.office@gmail.com
+
+Color Palette:
+- Primary Dark Navy: #060e1a
+- Gold Accent: #C8A84E
+- Background Cream: #f0ede8
+- Text Dark: #1a1a2e
+
+Typography:
+- Headings: Cormorant Garamond (serif)
+- Body: Montserrat (sans-serif)
+
+Logo: I will place auris-logo.png in public/assets/ folder. 
+Reference it in all pages and PDF reports.
+
+FOLDER STRUCTURE TO CREATE
+
+dpranalyzerpro2ver65/
+├── netlify/
+│   └── functions/
+│       ├── analyze.js
+│       ├── auth.js
+│       ├── usage.js
+│       └── admin.js
+├── public/
+│   ├── index.html
+│   ├── login.html
+│   ├── admin.html
+│   └── assets/
+│       ├── auris-logo.png
+│       ├── styles.css
+│       └── app.js
+├── irc-data/
+│   ├── README.txt
+│   └── .gitkeep
+├── netlify.toml
+├── package.json
+├── .env.example
+├── .gitignore
+└── README.md
+
+CRITICAL SECURITY REQUIREMENTS
+
+1. Anthropic API key NEVER in frontend code
+2. AI prompts and IRC logic ONLY inside Netlify functions
+3. IRC .MD reference files in irc-data/ folder, NEVER served publicly
+4. All token validation happens server-side on every single call
+5. Use sessionStorage only, never localStorage
+6. Add irc-data/* to .gitignore but keep folder structure
+7. Add .env to .gitignore
+8. CORS headers properly configured on all functions
+9. Rate limit: max 10 analyses per token per hour
+
+SUPABASE DATABASE
+
+Create a file called supabase-setup.sql with these exact tables:
+
+TABLE 1: firms
+- id UUID DEFAULT gen_random_uuid() PRIMARY KEY
+- firm_name TEXT NOT NULL
+- contact_person TEXT
+- email TEXT
+- phone TEXT
+- access_token TEXT UNIQUE NOT NULL
+- analyses_total INTEGER DEFAULT 0
+- analyses_used INTEGER DEFAULT 0
+- analyses_remaining computed as total minus used
+- license_type TEXT DEFAULT starter
+- expiry_date DATE
+- is_active BOOLEAN DEFAULT true
+- created_at TIMESTAMPTZ DEFAULT NOW()
+- notes TEXT
+
+TABLE 2: usage_log
+- id UUID DEFAULT gen_random_uuid() PRIMARY KEY
+- firm_id UUID REFERENCES firms id
+- firm_name TEXT
+- project_name TEXT
+- document_name TEXT
+- analysis_timestamp TIMESTAMPTZ DEFAULT NOW()
+- analyses_before INTEGER
+- analyses_after INTEGER
+- status TEXT DEFAULT success
+
+Include Row Level Security policies, index on access_token 
+for fast lookups, and sample INSERT for test firm with 
+token AURIS-TEST-001 and 10 analyses.
+
+NETLIFY FUNCTION 1: auth.js
+
+Purpose: Validate firm access token
+Input: token string
+Process:
+- Query Supabase firms table where access_token matches
+- Check is_active equals true
+- Check expiry_date is not passed
+- Check analyses_remaining is greater than zero
+Output JSON: valid true or false, firm_name, analyses_remaining, 
+expiry_date, message
+
+NETLIFY FUNCTION 2: analyze.js
+
+Purpose: Run AI analysis with full prompt hidden server-side
+Input: token, document_base64, document_name, project_name
+
+Process:
+1. Validate token
+2. Check analyses_remaining greater than zero
+3. Load all IRC reference files from irc-data/ folder 
+   using Node.js fs module, read each .md file if it exists
+4. Build full prompt combining system message plus IRC content
+5. Call Anthropic API
+6. Parse JSON response
+7. ONLY IF successful: increment analyses_used by one 
+   and write to usage_log
+8. Return analysis result to frontend
+
+Embed this complete system prompt inside the function:
+
+You are a senior highway design auditor with 20 plus years 
+experience in IRC Codes and MoRTH Specifications 5th Revision. 
+Analyze the provided DPR document for compliance deficiencies 
+in hill and mountain road projects for Border Roads Organisation.
+
+For each finding provide:
+- clause_reference: specific IRC or MoRTH clause number 
+  from reference documents provided
+- description: detailed explanation of what is wrong
+- severity: critical, major, minor, or observation
+- recommendation: specific corrective action
+- page_reference: location in the DPR document
+
+Severity definitions:
+critical means safety hazards, structural failures, major code violations
+major means significant non-compliance, design errors, missing calculations
+minor means incomplete data, minor deviations, formatting issues
+observation means best practice suggestions and improvements
+
+Check all engineering disciplines equally: pavement design, 
+geometric design, drainage, bridges, geotechnical, safety, 
+traffic, environmental, cost estimation, materials.
+
+Cite ONLY clause numbers that appear in the reference 
+documents provided. Do not hallucinate clause numbers.
+
+Return ONLY valid JSON with no markdown backticks:
+{
+  "project_name": "string",
+  "analysis_date": "string in DD/MM/YYYY format",
+  "total_findings": number,
+  "critical_count": number,
+  "major_count": number,
+  "minor_count": number,
+  "observation_count": number,
+  "executive_summary": "2 to 3 sentence summary",
+  "compliance_score": number between 0 and 100,
+  "findings": [
+    {
+      "finding_number": number,
+      "clause_reference": "string",
+      "severity": "string",
+      "title": "string",
+      "description": "string",
+      "recommendation": "string",
+      "page_reference": "string"
+    }
+  ],
+  "overall_recommendation": "string"
+}
+
+Generate 12 to 18 findings with natural severity distribution 
+across all four levels.
+
+Use these environment variables in analyze.js:
+ANTHROPIC_API_KEY
+SUPABASE_URL
+SUPABASE_SERVICE_KEY
+
+Model to use: claude-haiku-4-5-20251001
+Max tokens: 32000
+
+NETLIFY FUNCTION 3: usage.js
+
+Purpose: Standalone credit check
+Operations:
+- check: returns current analyses_remaining for a token
+- log: writes entry to usage_log for audit purposes
+
+NETLIFY FUNCTION 4: admin.js
+
+Purpose: Administrator operations
+Protected by header x-admin-secret matching ADMIN_SECRET env variable
+Operations:
+- list_firms: return all firms with full stats
+- add_firm: create new firm with starting credits
+- topup: add analyses to existing firm
+- deactivate: set is_active to false
+- get_usage: full usage_log for a specific firm
+
+FRONTEND PAGE 1: login.html
+
+Background color: #f0ede8
+Centered card 480px wide
+AURIS logo at top centered 120px height
+Heading: DPR Compliance Analyzer in Cormorant Garamond font
+Subheading: AURIS PRIVATE LIMITED in gold color #C8A84E
+Single input field labeled Enter Your Access Token
+Button: Access Application in navy background with gold border
+On success: show firm name and analyses remaining, 
+then redirect to index.html after 2 seconds
+On failure: show clear error message in red
+Footer text: www.auris8.com | CIN: U70200HR2026PTC141922
+
+FRONTEND PAGE 2: index.html
+
+Header bar with navy background and gold accents:
+- Left side: AURIS logo plus DPR Analyzer Pro text
+- Right side: firm name, analyses remaining badge, logout button
+
+Body with cream background:
+Card 1 - Project Information:
+- Project Name input field required
+- Optional fields: Location, Length km, Client Department
+
+Card 2 - Document Upload:
+- Large drag and drop zone
+- Text: Drop your DPR PDF here or click to browse
+- Accept PDF files only
+- Show filename and size after upload
+- Warning if file exceeds 10MB
+
+Card 3 - Analyze Button:
+- Large gold button labeled Run Compliance Analysis
+- Notice text: This will use 1 analysis credit
+- Button disabled until file is uploaded and project name entered
+
+Loading State:
+- Animated gold spinner
+- Status text: Analyzing document against IRC and MoRTH specifications
+- Estimated time: Typically takes 60 to 90 seconds
+
+Results Display:
+- Large compliance score gauge prominently shown
+- Green if 80 or above, yellow if 60 to 79, red if below 60
+- Four severity count cards in a row: Critical red, Major orange, 
+  Minor yellow, Observation blue
+- Executive summary in a styled box
+- Findings table with columns: number, severity badge, clause, 
+  title, description, recommendation
+- Click any row to expand full detail
+- Download Report PDF button in gold
+- New Analysis button
+
+IMPORTANT: No sensitive logic in index.html. This file only:
+- Reads token from sessionStorage
+- Converts PDF to base64
+- Calls /.netlify/functions/analyze
+- Displays the returned results
+- Generates PDF using jsPDF
+
+FRONTEND PAGE 3: admin.html
+
+Simple admin dashboard protected by ADMIN_SECRET
+Shows table of all firms with columns: 
+name, token, used/total analyses, expiry date, active status
+Buttons per firm row: Topup Credits, Deactivate, View Usage Log
+Add New Firm form with fields: 
+firm name, contact person, email, phone, 
+starting number of analyses, expiry date
+Auto-generate unique tokens in format AURIS-FIRMNAME-XXXX
+
+PDF REPORT GENERATION
+
+Use jsPDF library loaded from CDN in index.html.
+PDF is generated client-side from the JSON result received 
+from analyze.js. The prompt and IRC logic stay server-side.
+
+Every single page of the PDF must have:
+
+Header section:
+- AURIS logo image top-left 30px height
+- Text AURIS PRIVATE LIMITED in gold Cormorant Garamond centered
+- Text DPR Compliance Analysis Report as subtitle
+- Date and project name on right side
+- Thin gold horizontal line below header
+
+Watermark on every page:
+- Text: AURIS PRIVATE LIMITED
+- Font: Helvetica Bold
+- Size: 60 point
+- Color: #C8A84E gold
+- Opacity: 0.08 very subtle
+- Rotation: minus 45 degrees diagonal
+- Centered on page
+
+Footer on every page:
+- Thin gold line above footer
+- Left text: Confidential | Generated by AURIS PRIVATE LIMITED
+- Center text: CIN: U70200HR2026PTC141922 | www.auris8.com
+- Right text: Page number of total pages
+
+PDF Page 1 - Cover Page:
+- AURIS logo large centered 150px
+- Title: DPR COMPLIANCE ANALYSIS REPORT in large text
+- Project name below title
+- Client firm name
+- Date in DD/MM/YYYY format
+- Compliance score in large colored circle
+- CONFIDENTIAL text stamp at bottom in red
+
+PDF Page 2 - Executive Summary:
+- Executive summary paragraph
+- Table showing severity distribution
+- Compliance score explanation
+- Overall recommendation
+
+PDF Page 3 onwards - Detailed Findings:
+- Each finding as a structured block with clear spacing
+- Severity badge with colors:
+  Critical uses #dc2626
+  Major uses #ea580c
+  Minor uses #ca8a04
+  Observation uses #2563eb
+- Clause reference in bold text
+- Description as paragraph
+- Recommendation in italics with light gold background box
+
+Final PDF Page - Disclaimer:
+Text: This report is generated by AURIS Private Limited 
+AI-powered DPR analysis tool. Findings are based on automated 
+analysis against IRC Codes and MoRTH 5th Revision specifications. 
+Final engineering judgment must be exercised by qualified 
+highway engineers. AURIS Private Limited accepts no liability 
+for decisions made solely on the basis of this report.
+
+CONFIGURATION FILES
+
+netlify.toml contents:
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+  
+[functions]
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/*"
+  to = "/login.html"
+  status = 200
+
+[context.production.environment]
+  NODE_VERSION = "18"
+
+package.json contents:
+Name: auris-dpr-analyzer
+Version: 1.0.0
+Dependencies needed: 
+  @anthropic-ai/sdk latest version
+  @supabase/supabase-js latest version
+
+.env.example contents:
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your-service-role-key-here
+ADMIN_SECRET=change-this-to-strong-password
+
+.gitignore must include:
+node_modules/
+.env
+.env.local
+irc-data/*.md
+irc-data/*.txt
+!irc-data/.gitkeep
+!irc-data/README.txt
+.DS_Store
+*.log
+dist/
+
+irc-data/README.txt contents:
+Place IRC reference MD files in this folder.
+These files are read server-side only by analyze.js.
+They are excluded from Git to protect intellectual property.
+Required files to place here after deployment:
+IRC_37_2018_Extracted.md
+IRC_52_2019_Extraction.md
+IRC_SP19_DPR_Analyzer_Extraction.md
+IRC_SP48_2023_DPR_Analyzer_Extraction.md
+MoRTH_DPR_Reference_Extract.md
+IRC_73_1980_Extraction.md
+IRC_SP13_DPR_Analyzer_Extraction.md
+IRC_SP42_2014_DPR_Analyzer_Extraction.md
+
+README.md must cover:
+1. Project overview and architecture
+2. Prerequisites list
+3. Step by step Supabase setup with exact SQL to run
+4. Step by step Netlify environment variables setup
+5. How to deploy to Netlify from GitHub
+6. How to add a new licensed firm using admin panel
+7. How to top up credits for a firm
+8. License packages:
+   Starter: 25 analyses for Rs 25000
+   Standard: 75 analyses for Rs 60000
+   Enterprise: Unlimited annual contract price on request
+9. How to place IRC MD files in irc-data folder
+10. Security architecture explanation
+11. Troubleshooting common issues
+12. Support contact: auris8.office@gmail.com
+
+FINAL CHECKLIST
+
+When complete confirm every item below is done:
+- All old files removed, fresh structure created
+- 4 Netlify functions written and complete
+- login.html with full AURIS branding complete
+- index.html with no sensitive logic complete
+- admin.html for managing firms complete
+- PDF generation with watermark on every page working
+- supabase-setup.sql ready to execute
+- netlify.toml configured correctly
+- package.json with correct dependencies
+- .env.example template created
+- .gitignore protecting irc-data and secrets
+- README.md with complete deployment guide
+- Sample test token AURIS-TEST-001 in SQL insert statement
+- Logo placeholder comment added wherever logo is referenced
+
+IMPORTANT FINAL INSTRUCTIONS
+
+Build everything from scratch.
+Add comment REPLACE THIS WITH ACTUAL AURIS LOGO FILE 
+wherever auris-logo.png is referenced.
+The irc-data folder gets README.txt and .gitkeep only.
+Actual MD files I will add manually after deployment.
+All dates throughout in DD/MM/YYYY format.
+All currency in Indian Rupees with Rs symbol.
+Mobile responsive design on all three pages.
+Add helpful comments in all function files explaining logic.
+When complete output a clear summary of what was built 
+and list exactly what I need to do manually next.
+
+Begin by confirming you have read this file, then list 
+all files you will create, then build them one by one 
+confirming each file when complete.

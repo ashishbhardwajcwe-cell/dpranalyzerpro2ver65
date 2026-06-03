@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AURIS DPR Analyzer Pro</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+
+  <!-- jsPDF for client-side PDF generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+</head>
+<body>
+
+<!-- ========== APP HEADER ========== -->
+<header class="app-header">
+  <div class="header-brand">
+    <!-- Logo — REPLACE THIS WITH ACTUAL AURIS LOGO FILE at public/assets/auris-logo.png -->
+    <img
+      src="/assets/auris-logo.png"
+      alt="AURIS"
+      id="header-logo"
+      onerror="this.style.display='none';"
+      style="height:38px; object-fit:contain;"
+    />
+    <div class="brand-text">
+      <h1>DPR Analyzer Pro</h1>
+      <small>AURIS PRIVATE LIMITED</small>
+    </div>
+  </div>
+
+  <div class="header-right">
+    <span class="firm-name-display" id="header-firm-name"></span>
+    <span class="analyses-badge" id="header-analyses">— credits</span>
+    <button class="btn btn-outline btn-sm" onclick="logout()">Logout</button>
+  </div>
+</header>
+
+<!-- ========== LOADING OVERLAY ========== -->
+<div class="loading-overlay hidden" id="loading-overlay">
+  <div class="spinner"></div>
+  <h3>Analyzing Document</h3>
+  <p>Checking compliance against IRC Codes &amp; MoRTH 5th Revision specifications</p>
+  <p style="margin-top:0.5rem; color:rgba(200,168,78,0.8);">Typically takes 60–90 seconds</p>
+</div>
+
+<!-- ========== MAIN CONTENT ========== -->
+<main class="main-content">
+
+  <!-- ---- UPLOAD / INPUT SECTION ---- -->
+  <div id="upload-section">
+
+    <!-- Card 1: Project Information -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Project Information</h2>
+        <p>Enter the details of the DPR being analyzed</p>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="project-name">Project Name <span style="color:#dc2626;">*</span></label>
+          <input type="text" id="project-name" placeholder="e.g. Widening of NH-XX, Km 0.000 to 50.000" required />
+        </div>
+        <div class="form-group">
+          <label for="project-location">Location / State</label>
+          <input type="text" id="project-location" placeholder="e.g. Himachal Pradesh" />
+        </div>
+        <div class="form-group">
+          <label for="project-length">Length (km)</label>
+          <input type="number" id="project-length" placeholder="e.g. 45.5" step="0.1" min="0" />
+        </div>
+        <div class="form-group" style="grid-column:1/-1;">
+          <label for="client-dept">Client Department</label>
+          <input type="text" id="client-dept" placeholder="e.g. Border Roads Organisation (BRO)" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 2: Document Upload -->
+    <div class="card">
+      <div class="card-header">
+        <h2>DPR Document Upload</h2>
+        <p>Upload the Detailed Project Report PDF for analysis</p>
+      </div>
+
+      <div
+        class="upload-zone"
+        id="upload-zone"
+        onclick="document.getElementById('file-input').click()"
+        ondrop="handleDrop(event)"
+        ondragover="handleDragOver(event)"
+        ondragleave="handleDragLeave(event)"
+      >
+        <div class="upload-icon">📄</div>
+        <h3>Drop your DPR PDF here or click to browse</h3>
+        <p>PDF files only · Maximum file size: 10 MB</p>
+        <input
+          type="file"
+          id="file-input"
+          accept="application/pdf,.pdf"
+          style="display:none;"
+          onchange="handleFileSelect(event)"
+        />
+      </div>
+
+      <div id="file-info-box" class="hidden" style="margin-top:1rem;">
+        <div class="file-info">
+          <span class="file-icon">📋</span>
+          <div>
+            <div class="file-name" id="file-name-display"></div>
+            <div class="file-size" id="file-size-display"></div>
+          </div>
+          <button
+            class="btn btn-sm btn-outline"
+            style="margin-left:auto;"
+            onclick="clearFile()"
+          >Remove</button>
+        </div>
+      </div>
+
+      <div id="file-warning" class="alert alert-warning hidden" style="margin-top:0.75rem;">
+        ⚠ File exceeds 10 MB. Large files may take longer or fail. Please consider splitting the PDF.
+      </div>
+    </div>
+
+    <!-- Card 3: Analyze Button -->
+    <div class="card" style="text-align:center; padding:2rem;">
+      <button
+        class="btn btn-gold btn-lg"
+        id="analyze-btn"
+        disabled
+        onclick="runAnalysis()"
+        style="min-width:280px; font-size:1.1rem; padding:1.1rem 2.5rem;"
+      >
+        Run Compliance Analysis
+      </button>
+      <p style="color:#888; font-size:0.82rem; margin-top:0.75rem;">
+        ⚡ This will use <strong>1 analysis credit</strong> from your account
+      </p>
+
+      <div id="form-error" class="alert alert-error hidden" style="margin-top:1rem; text-align:left;"></div>
+    </div>
+
+  </div><!-- end #upload-section -->
+
+
+  <!-- ========== RESULTS SECTION (hidden until analysis complete) ========== -->
+  <div id="results-section" class="hidden">
+
+    <!-- Score + Summary Card -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Compliance Analysis Report</h2>
+        <p id="result-project-name" style="color:var(--navy); font-weight:600;"></p>
+      </div>
+
+      <!-- Compliance Score -->
+      <div class="score-section">
+        <div class="score-circle" id="score-circle">
+          <span class="score-value" id="score-value">—</span>
+          <span class="score-label">Compliance</span>
+        </div>
+        <p id="score-label-text" style="font-size:0.85rem; color:#666;"></p>
+      </div>
+
+      <!-- Severity Counts -->
+      <div class="severity-grid">
+        <div class="severity-card sev-critical">
+          <div class="count" id="count-critical">0</div>
+          <div class="label">Critical</div>
+        </div>
+        <div class="severity-card sev-major">
+          <div class="count" id="count-major">0</div>
+          <div class="label">Major</div>
+        </div>
+        <div class="severity-card sev-minor">
+          <div class="count" id="count-minor">0</div>
+          <div class="label">Minor</div>
+        </div>
+        <div class="severity-card sev-observation">
+          <div class="count" id="count-observation">0</div>
+          <div class="label">Observation</div>
+        </div>
+      </div>
+
+      <!-- Executive Summary -->
+      <div style="background:#faf8f4; border-left:4px solid var(--gold); padding:1.1rem 1.25rem; border-radius:var(--radius); margin-bottom:1.25rem;">
+        <h3 style="font-size:1rem; margin-bottom:0.5rem;">Executive Summary</h3>
+        <p id="executive-summary" style="font-size:0.9rem; color:#333;"></p>
+      </div>
+
+      <!-- Overall Recommendation -->
+      <div style="background:#f0fdf4; border:1px solid #bbf7d0; padding:1rem 1.25rem; border-radius:var(--radius); margin-bottom:1.5rem;">
+        <h3 style="font-size:1rem; color:#166534; margin-bottom:0.4rem;">Overall Recommendation</h3>
+        <p id="overall-recommendation" style="font-size:0.88rem; color:#166534;"></p>
+      </div>
+
+      <!-- Action Buttons -->
+      <div style="display:flex; gap:1rem; flex-wrap:wrap;">
+        <button class="btn btn-gold btn-lg" id="download-pdf-btn" onclick="generatePDF()">
+          ⬇ Download PDF Report
+        </button>
+        <button class="btn btn-outline" onclick="newAnalysis()">
+          ↩ New Analysis
+        </button>
+      </div>
+    </div>
+
+    <!-- Findings Table Card -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Detailed Findings</h2>
+        <p id="findings-count-text" style="color:#666; font-size:0.85rem;"></p>
+      </div>
+
+      <div class="table-wrapper">
+        <table id="findings-table">
+          <thead>
+            <tr>
+              <th style="width:48px;">#</th>
+              <th style="width:120px;">Severity</th>
+              <th style="width:150px;">Clause Ref.</th>
+              <th>Finding Title</th>
+              <th style="width:100px;">Page Ref.</th>
+            </tr>
+          </thead>
+          <tbody id="findings-tbody"></tbody>
+        </table>
+      </div>
+
+      <p style="font-size:0.8rem; color:#888; margin-top:0.75rem;">
+        Click any row to expand full details.
+      </p>
+    </div>
+
+  </div><!-- end #results-section -->
+
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // ---- Auth guard ----
+  const token = requireAuth();
+  if (!token) return;
+
+  // ---- Populate header ----
+  const firmName          = Session.get('firm_name') || '';
+  const analysesRemaining = Session.get('analyses_remaining') ?? '?';
+  document.getElementById('header-firm-name').textContent = firmName;
+  document.getElementById('header-analyses').textContent  = analysesRemaining + ' credit' + (analysesRemaining === 1 ? '' : 's');
+
+  // ---- State ----
+  let selectedFile   = null;
+  let currentResult  = null;
+
+  // ---- File handling ----
+
+  window.handleDragOver = function (e) {
+    e.preventDefault();
+    document.getElementById('upload-zone').classList.add('drag-over');
+  };
+
+  window.handleDragLeave = function (e) {
+    document.getElementById('upload-zone').classList.remove('drag-over');
+  };
+
+  window.handleDrop = function (e) {
+    e.preventDefault();
+    document.getElementById('upload-zone').classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file) processFile(file);
+  };
+
+  window.handleFileSelect = function (e) {
+    const file = e.target.files[0];
+    if (file) processFile(file);
+  };
+
+  function processFile(file) {
+    if (!file.type.includes('pdf') && !file.name.toLowerCase().endsWith('.pdf')) {
+      showFormError('Only PDF files are accepted.');
+      return;
+    }
+
+    selectedFile = file;
+    document.getElementById('file-name-display').textContent = file.name;
+    document.getElementById('file-size-display').textContent = formatBytes(file.size);
+    document.getElementById('file-info-box').classList.remove('hidden');
+    document.getElementById('upload-zone').style.display = 'none';
+
+    const warning = document.getElementById('file-warning');
+    if (file.size > 10 * 1024 * 1024) {
+      warning.classList.remove('hidden');
+    } else {
+      warning.classList.add('hidden');
+    }
+
+    updateAnalyzeButton();
+    hideFormError();
+  }
+
+  window.clearFile = function () {
+    selectedFile = null;
+    document.getElementById('file-input').value = '';
+    document.getElementById('file-info-box').classList.add('hidden');
+    document.getElementById('upload-zone').style.display = 'block';
+    document.getElementById('file-warning').classList.add('hidden');
+    updateAnalyzeButton();
+  };
+
+  function updateAnalyzeButton() {
+    const projectName = document.getElementById('project-name').value.trim();
+    const btn         = document.getElementById('analyze-btn');
+    btn.disabled      = !selectedFile || !projectName;
+  }
+
+  document.getElementById('project-name').addEventListener('input', updateAnalyzeButton);
+
+  // ---- Run analysis ----
+
+  window.runAnalysis = async function () {
+    if (!selectedFile) return;
+    const projectName = document.getElementById('project-name').value.trim();
+    if (!projectName) return;
+
+    hideFormError();
+
+    // Show loading
+    document.getElementById('loading-overlay').classList.remove('hidden');
+    document.getElementById('analyze-btn').disabled = true;
+
+    try {
+      const documentBase64 = await fileToBase64(selectedFile);
+
+      const payload = {
+        token,
+        document_base64: documentBase64,
+        document_name:   selectedFile.name,
+        project_name:    projectName,
+      };
+
+      const data = await callAnalyze(payload);
+
+      document.getElementById('loading-overlay').classList.add('hidden');
+
+      if (data.success && data.result) {
+        currentResult = data.result;
+        // Update session credits
+        Session.set('analyses_remaining', data.analyses_remaining);
+        document.getElementById('header-analyses').textContent =
+          data.analyses_remaining + ' credit' + (data.analyses_remaining === 1 ? '' : 's');
+
+        displayResults(data.result);
+      } else {
+        showFormError(data.error || 'Analysis failed. Please try again.');
+        document.getElementById('analyze-btn').disabled = false;
+      }
+    } catch (err) {
+      document.getElementById('loading-overlay').classList.add('hidden');
+      showFormError('Network error. Please check your connection and retry.');
+      document.getElementById('analyze-btn').disabled = false;
+    }
+  };
+
+  // ---- Display results ----
+
+  function displayResults(result) {
+    // Show results section, hide upload
+    document.getElementById('upload-section').classList.add('hidden');
+    document.getElementById('results-section').classList.remove('hidden');
+
+    // Project name
+    document.getElementById('result-project-name').textContent = result.project_name || '';
+
+    // Compliance score
+    const score = result.compliance_score || 0;
+    const scoreCircle = document.getElementById('score-circle');
+    document.getElementById('score-value').textContent = score;
+
+    scoreCircle.classList.remove('score-green', 'score-yellow', 'score-red');
+    if (score >= 80) {
+      scoreCircle.classList.add('score-green');
+      document.getElementById('score-label-text').textContent = 'Good — Minor improvements required';
+    } else if (score >= 60) {
+      scoreCircle.classList.add('score-yellow');
+      document.getElementById('score-label-text').textContent = 'Fair — Significant revisions needed';
+    } else {
+      scoreCircle.classList.add('score-red');
+      document.getElementById('score-label-text').textContent = 'Poor — Major non-compliances found';
+    }
+
+    // Severity counts
+    document.getElementById('count-critical').textContent    = result.critical_count    || 0;
+    document.getElementById('count-major').textContent       = result.major_count       || 0;
+    document.getElementById('count-minor').textContent       = result.minor_count       || 0;
+    document.getElementById('count-observation').textContent = result.observation_count || 0;
+
+    // Summaries
+    document.getElementById('executive-summary').textContent    = result.executive_summary    || '';
+    document.getElementById('overall-recommendation').textContent = result.overall_recommendation || '';
+    document.getElementById('findings-count-text').textContent =
+      (result.total_findings || 0) + ' findings identified · Analysis date: ' + (result.analysis_date || '');
+
+    // Findings table
+    renderFindingsTable(result.findings || []);
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function renderFindingsTable(findings) {
+    const tbody = document.getElementById('findings-tbody');
+    tbody.innerHTML = '';
+
+    findings.forEach(function (f) {
+      // Finding row
+      const row = document.createElement('tr');
+      row.className   = 'finding-row';
+      row.innerHTML = `
+        <td>${escapeHtml(String(f.finding_number || ''))}</td>
+        <td>${severityBadge(f.severity)}</td>
+        <td><code style="font-size:0.8rem;">${escapeHtml(f.clause_reference || '—')}</code></td>
+        <td style="font-weight:500;">${escapeHtml(f.title || '')}</td>
+        <td style="color:#666; font-size:0.82rem;">${escapeHtml(f.page_reference || '—')}</td>
+      `;
+
+      // Detail row (hidden by default)
+      const detailRow = document.createElement('tr');
+      detailRow.style.display = 'none';
+      detailRow.innerHTML = `
+        <td colspan="5">
+          <div class="finding-detail">
+            <p style="margin-bottom:0.5rem;"><strong>Description:</strong> ${escapeHtml(f.description || '')}</p>
+            <div class="recommendation">
+              <strong>Recommendation:</strong> ${escapeHtml(f.recommendation || '')}
+            </div>
+          </div>
+        </td>
+      `;
+
+      row.addEventListener('click', function () {
+        const isOpen = detailRow.style.display !== 'none';
+        detailRow.style.display = isOpen ? 'none' : '';
+      });
+
+      tbody.appendChild(row);
+      tbody.appendChild(detailRow);
+    });
+  }
+
+  function showFormError(msg) {
+    const box = document.getElementById('form-error');
+    box.textContent = msg;
+    box.classList.remove('hidden');
+  }
+
+  function hideFormError() {
+    document.getElementById('form-error').classList.add('hidden');
+  }
+
+  window.newAnalysis = function () {
+    currentResult = null;
+    clearFile();
+    document.getElementById('project-name').value = '';
+    document.getElementById('project-location').value = '';
+    document.getElementById('project-length').value = '';
+    document.getElementById('client-dept').value = '';
+    document.getElementById('results-section').classList.add('hidden');
+    document.getElementById('upload-section').classList.remove('hidden');
+    updateAnalyzeButton();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // ---- PDF Generation (client-side, using jsPDF) ----
+  // The AI prompt and IRC logic remain server-side.
+  // This function only formats the JSON result returned from analyze.js.
+
+  window.generatePDF = function () {
+    if (!currentResult) return;
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+
+    const PAGE_W  = 210;
+    const PAGE_H  = 297;
+    const MARGIN  = 18;
+    const CONTENT_W = PAGE_W - MARGIN * 2;
+
+    const NAVY  = [6,   14,  26];
+    const GOLD  = [200, 168, 78];
+    const CREAM = [240, 237, 232];
+    const RED   = [220, 38,  38];
+    const ORG   = [234, 88,  12];
+    const YEL   = [202, 138, 4];
+    const BLU   = [37,  99,  235];
+
+    const result     = currentResult;
+    const firmName   = Session.get('firm_name') || 'Licensed Firm';
+    const projectName = result.project_name || document.getElementById('project-name').value;
+    const today      = new Date().toLocaleDateString('en-GB');
+
+    let pageNum = 0;
+
+    // Helper: add watermark + header + footer to current page
+    function addPageDecorations() {
+      pageNum++;
+      const totalPages = '?'; // will be patched at end via jsPDF internals
+
+      // --- WATERMARK ---
+      doc.saveGraphicsState();
+      doc.setGState(new doc.GState({ opacity: 0.08 }));
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(60);
+      doc.setTextColor(...GOLD);
+      doc.text('AURIS PRIVATE LIMITED', PAGE_W / 2, PAGE_H / 2, {
+        align: 'center',
+        angle: 45,
+      });
+      doc.restoreGraphicsState();
+
+      // --- HEADER ---
+      // Logo placeholder (will show if image is available)
+      try {
+        // REPLACE THIS WITH ACTUAL AURIS LOGO FILE at public/assets/auris-logo.png
+        doc.addImage('/assets/auris-logo.png', 'PNG', MARGIN, 8, 20, 10, '', 'FAST');
+      } catch (_) {
+        // Logo not available — skip silently
+      }
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(...GOLD);
+      doc.text('AURIS PRIVATE LIMITED', PAGE_W / 2, 12, { align: 'center' });
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(80, 80, 80);
+      doc.text('DPR Compliance Analysis Report', PAGE_W / 2, 17, { align: 'center' });
+      doc.text(today, PAGE_W - MARGIN, 12, { align: 'right' });
+      doc.text(projectName, PAGE_W - MARGIN, 17, { align: 'right' });
+
+      // Gold line below header
+      doc.setDrawColor(...GOLD);
+      doc.setLineWidth(0.5);
+      doc.line(MARGIN, 20, PAGE_W - MARGIN, 20);
+
+      // --- FOOTER ---
+      doc.setDrawColor(...GOLD);
+      doc.line(MARGIN, PAGE_H - 14, PAGE_W - MARGIN, PAGE_H - 14);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(100, 100, 100);
+      doc.text('Confidential | Generated by AURIS PRIVATE LIMITED', MARGIN, PAGE_H - 10);
+      doc.text('CIN: U70200HR2026PTC141922 | www.auris8.com', PAGE_W / 2, PAGE_H - 10, { align: 'center' });
+      doc.text('Page ' + pageNum, PAGE_W - MARGIN, PAGE_H - 10, { align: 'right' });
+    }
+
+    // ========================
+    // PAGE 1 — COVER
+    // ========================
+    addPageDecorations();
+
+    // Compliance score circle (filled)
+    const score = result.compliance_score || 0;
+    let scoreColor = score >= 80 ? [22, 163, 74] : score >= 60 ? [202, 138, 4] : [220, 38, 38];
+
+    doc.setFillColor(...scoreColor);
+    doc.circle(PAGE_W / 2, 155, 22, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(22);
+    doc.setTextColor(255, 255, 255);
+    doc.text(String(score), PAGE_W / 2, 153, { align: 'center' });
+    doc.setFontSize(8);
+    doc.text('COMPLIANCE SCORE', PAGE_W / 2, 160, { align: 'center' });
+
+    // Logo placeholder on cover
+    try {
+      // REPLACE THIS WITH ACTUAL AURIS LOGO FILE
+      doc.addImage('/assets/auris-logo.png', 'PNG', PAGE_W / 2 - 25, 28, 50, 25, '', 'FAST');
+    } catch (_) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(28);
+      doc.setTextColor(...GOLD);
+      doc.text('AURIS', PAGE_W / 2, 50, { align: 'center' });
+    }
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.setTextColor(...NAVY);
+    doc.text('DPR COMPLIANCE ANALYSIS REPORT', PAGE_W / 2, 72, { align: 'center' });
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(13);
+    doc.setTextColor(60, 60, 60);
+    doc.text(projectName, PAGE_W / 2, 84, { align: 'center', maxWidth: CONTENT_W });
+
+    doc.setFontSize(11);
+    doc.setTextColor(100, 100, 100);
+    doc.text(firmName, PAGE_W / 2, 96, { align: 'center' });
+    doc.text('Analysis Date: ' + today, PAGE_W / 2, 104, { align: 'center' });
+
+    // CONFIDENTIAL stamp
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.setTextColor(...RED);
+    doc.text('CONFIDENTIAL', PAGE_W / 2, 210, { align: 'center' });
+
+    // ========================
+    // PAGE 2 — EXECUTIVE SUMMARY
+    // ========================
+    doc.addPage();
+    addPageDecorations();
+
+    let y = 28;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.setTextColor(...NAVY);
+    doc.text('Executive Summary', MARGIN, y);
+    y += 8;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(50, 50, 50);
+    const summaryLines = doc.splitTextToSize(result.executive_summary || '', CONTENT_W);
+    doc.text(summaryLines, MARGIN, y);
+    y += summaryLines.length * 5 + 8;
+
+    // Severity table
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(...NAVY);
+    doc.text('Severity Distribution', MARGIN, y);
+    y += 5;
+
+    doc.autoTable({
+      startY: y,
+      head: [['Severity', 'Count', 'Description']],
+      body: [
+        ['Critical',    result.critical_count    || 0, 'Safety hazards, structural failures, major code violations'],
+        ['Major',       result.major_count       || 0, 'Significant non-compliance, design errors, missing calculations'],
+        ['Minor',       result.minor_count       || 0, 'Incomplete data, minor deviations, formatting issues'],
+        ['Observation', result.observation_count || 0, 'Best practice suggestions and improvements'],
+      ],
+      styles: { font: 'helvetica', fontSize: 9, cellPadding: 3 },
+      headStyles: { fillColor: NAVY, textColor: GOLD, fontStyle: 'bold' },
+      columnStyles: { 1: { halign: 'center' } },
+      alternateRowStyles: { fillColor: [250, 248, 245] },
+      margin: { left: MARGIN, right: MARGIN },
+    });
+
+    y = doc.lastAutoTable.finalY + 8;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(...NAVY);
+    doc.text('Overall Recommendation', MARGIN, y);
+    y += 5;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(50, 50, 50);
+    const recLines = doc.splitTextToSize(result.overall_recommendation || '', CONTENT_W);
+    doc.text(recLines, MARGIN, y);
+
+    // ========================
+    // PAGE 3+ — DETAILED FINDINGS
+    // ========================
+    const findings = result.findings || [];
+    findings.forEach(function (f, idx) {
+      doc.addPage();
+      addPageDecorations();
+
+      let fy = 28;
+
+      // Finding header
+      const sevColor = f.severity === 'critical'    ? RED  :
+                       f.severity === 'major'        ? ORG  :
+                       f.severity === 'minor'        ? YEL  : BLU;
+
+      doc.setFillColor(...sevColor);
+      doc.roundedRect(MARGIN, fy, CONTENT_W, 9, 2, 2, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(255, 255, 255);
+      doc.text(
+        'Finding ' + f.finding_number + '  |  ' + (f.severity || '').toUpperCase() + '  |  ' + (f.clause_reference || ''),
+        MARGIN + 4, fy + 6
+      );
+      fy += 13;
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(...NAVY);
+      const titleLines = doc.splitTextToSize(f.title || '', CONTENT_W);
+      doc.text(titleLines, MARGIN, fy);
+      fy += titleLines.length * 5.5 + 4;
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(60, 60, 60);
+      const descLines = doc.splitTextToSize(f.description || '', CONTENT_W);
+      doc.text(descLines, MARGIN, fy);
+      fy += descLines.length * 4.8 + 6;
+
+      // Recommendation box
+      doc.setFillColor(255, 250, 230);
+      doc.setDrawColor(...GOLD);
+      doc.setLineWidth(0.4);
+      const recText = 'Recommendation: ' + (f.recommendation || '');
+      const recLinesF = doc.splitTextToSize(recText, CONTENT_W - 8);
+      const boxH = recLinesF.length * 4.8 + 6;
+      doc.roundedRect(MARGIN, fy, CONTENT_W, boxH, 2, 2, 'FD');
+      doc.setFont('helvetica', 'italic');
+      doc.setTextColor(90, 70, 20);
+      doc.text(recLinesF, MARGIN + 4, fy + 5);
+      fy += boxH + 6;
+
+      // Page reference
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(120, 120, 120);
+      doc.text('Document Reference: ' + (f.page_reference || '—'), MARGIN, fy);
+    });
+
+    // ========================
+    // FINAL PAGE — DISCLAIMER
+    // ========================
+    doc.addPage();
+    addPageDecorations();
+
+    let dy = 40;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.setTextColor(...NAVY);
+    doc.text('Disclaimer', MARGIN, dy);
+    dy += 10;
+
+    const disclaimer = 'This report is generated by AURIS Private Limited AI-powered DPR analysis tool. ' +
+      'Findings are based on automated analysis against IRC Codes and MoRTH 5th Revision specifications. ' +
+      'Final engineering judgment must be exercised by qualified highway engineers. ' +
+      'AURIS Private Limited accepts no liability for decisions made solely on the basis of this report.';
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(60, 60, 60);
+    const disclaimerLines = doc.splitTextToSize(disclaimer, CONTENT_W);
+    doc.text(disclaimerLines, MARGIN, dy);
+
+    // Save
+    const safeProject = projectName.replace(/[^a-zA-Z0-9\s\-_]/g, '').substring(0, 40).trim().replace(/\s+/g, '_');
+    doc.save('AURIS_DPR_Report_' + safeProject + '_' + today.replace(/\//g, '-') + '.pdf');
+  };
+
+})();
+</script>
+
+</body>
+</html>
