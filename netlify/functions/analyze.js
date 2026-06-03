@@ -366,32 +366,32 @@ ${ircSection}
 
 Analyze the document thoroughly and return the compliance findings in the exact JSON format specified.`;
 
-    // Token-budget guard. Claude's context window is 200K tokens and must hold
-    // the system prompt + IRC references + document + the model's output. For a
-    // text document that is too large (e.g. a big spreadsheet), trim it to fit
-    // and report how much was analyzed instead of letting the API reject it.
-    // ~3.8 chars per token is a safe heuristic for this CSV/markdown content.
-    const CONTEXT_WINDOW    = 200000;
-    const MAX_OUTPUT_TOKENS = 16000;   // output budget — ample for 15-20 findings
-    const SAFETY_MARGIN     = 8000;
-    const CHARS_PER_TOKEN   = 3.8;
-    const maxInputChars = (CONTEXT_WINDOW - MAX_OUTPUT_TOKENS - SAFETY_MARGIN) * CHARS_PER_TOKEN;
+    // Token-budget guard. Claude's window is 200K tokens (input + output). We
+    // target <=175K INPUT so the output still fits with margin. Spreadsheet/CSV
+    // data tokenises unpredictably, so we DON'T guess from character counts —
+    // we ask the real tokenizer (count_tokens) and trim the document until it
+    // actually fits, then report how much was analyzed.
+    const MAX_OUTPUT_TOKENS   = 16000;   // output budget — ample for 15-20 findings
+    const TARGET_INPUT_TOKENS = 175000;  // 175K in + 16K out = 191K, under 200K
 
     let truncationNotice = '';
 
-    function fitDocumentText(rawText) {
-      // Chars already consumed by everything except the document body
-      const overheadChars = SYSTEM_PROMPT.length + baseUserText.length + 256;
-      const docBudget = Math.max(0, Math.floor(maxInputChars - overheadChars));
-      if (rawText.length <= docBudget) return rawText;
+    const MODEL = 'claude-haiku-4-5-20251001';
 
-      const keptPct = Math.max(1, Math.round((docBudget / rawText.length) * 100));
-      truncationNotice =
-        `The uploaded document was very large (${(rawText.length / (1024 * 1024)).toFixed(1)} MB of text); ` +
-        `approximately the first ${keptPct}% was analyzed to stay within the model's size limit. ` +
-        `For complete coverage, split the document into smaller files and analyze each separately.`;
-      return rawText.slice(0, docBudget) +
-        `\n\n=== [DOCUMENT TRUNCATED — about ${100 - keptPct}% omitted due to size limits] ===`;
+    async function countInputTokens(content) {
+      const r = await anthropic.messages.countTokens({
+        model:    MODEL,
+        system:   SYSTEM_PROMPT,
+        messages: [{ role: 'user', content }],
+      });
+      return r.input_tokens;
+    }
+
+    function buildTextContent(docText, truncated) {
+      const tail = truncated
+        ? '\n\n=== [DOCUMENT TRUNCATED to fit the model size limit] ==='
+        : '';
+      return [{ type: 'text', text: `${baseUserText}\n\n=== DOCUMENT CONTENT ===\n${docText}${tail}` }];
     }
 
     let messageContent;
@@ -411,8 +411,7 @@ Analyze the document thoroughly and return the compliance findings in the exact 
       ];
     } else {
       // Text-based path: Excel/CSV/Text arrive as document_text; Word/PPT (and
-      // any legacy base64 upload) are extracted server-side. Either way, trim
-      // to the token budget before sending.
+      // any legacy base64 upload) are extracted server-side.
       let docText;
       if (documentText) {
         docText = documentText;
@@ -432,17 +431,45 @@ Analyze the document thoroughly and return the compliance findings in the exact 
         docText = extractedText;
       }
 
-      docText = fitDocumentText(docText);
-      if (truncationNotice) {
-        console.log('analyze.js: document truncated to fit token budget —', truncationNotice);
+      // Trim the document until the REAL input token count fits the budget.
+      const originalLen = docText.length;
+      let truncated = false;
+      let content   = buildTextContent(docText, truncated);
+
+      try {
+        for (let pass = 0; pass < 6; pass++) {
+          const tokens = await countInputTokens(content);
+          if (tokens <= TARGET_INPUT_TOKENS) break;
+          // Shrink the document proportionally, with a 6% safety cut each pass
+          const ratio  = (TARGET_INPUT_TOKENS / tokens) * 0.94;
+          const newLen = Math.max(0, Math.floor(docText.length * ratio));
+          docText   = docText.slice(0, newLen);
+          truncated = true;
+          content   = buildTextContent(docText, truncated);
+        }
+      } catch (countErr) {
+        // count_tokens unavailable → fall back to a conservative char cap
+        // (2.6 chars/token is deliberately low so dense CSV still fits)
+        console.warn('analyze.js: count_tokens failed, using char fallback:', countErr.message);
+        const overhead  = SYSTEM_PROMPT.length + baseUserText.length + 256;
+        const docBudget = Math.max(0, Math.floor(TARGET_INPUT_TOKENS * 2.6 - overhead));
+        if (docText.length > docBudget) {
+          docText   = docText.slice(0, docBudget);
+          truncated = true;
+        }
+        content = buildTextContent(docText, truncated);
       }
 
-      messageContent = [
-        {
-          type: 'text',
-          text: `${baseUserText}\n\n=== DOCUMENT CONTENT ===\n${docText}`,
-        },
-      ];
+      if (truncated) {
+        const keptPct = Math.max(1, Math.round((docText.length / originalLen) * 100));
+        truncationNotice =
+          `The uploaded document was very large; approximately the first ${keptPct}% was analyzed ` +
+          `to stay within the model's size limit. For complete coverage, split the document into ` +
+          `smaller files and analyze each separately.`;
+        console.log(`analyze.js: document truncated to ~${keptPct}% to fit token budget`);
+      }
+
+      messageContent = content;
     }
 
     // Step 6: Call Anthropic using streaming to handle long responses reliably.
@@ -450,7 +477,7 @@ Analyze the document thoroughly and return the compliance findings in the exact 
     let rawText;
     try {
       const stream = await anthropic.messages.stream({
-        model:      'claude-haiku-4-5-20251001',
+        model:      MODEL,
         max_tokens: MAX_OUTPUT_TOKENS,
         system:     SYSTEM_PROMPT,
         messages:   [{ role: 'user', content: messageContent }],
