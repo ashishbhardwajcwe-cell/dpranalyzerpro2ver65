@@ -54,7 +54,16 @@ async function callAnalyze(payload) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return res.json();
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Function returned non-JSON — likely a timeout or crash
+    if (res.status === 504 || res.status === 502) {
+      return { error: 'Analysis timed out. Please try a smaller document or split it into sections.' };
+    }
+    return { error: `Server error (${res.status}). Please retry. If the problem persists, contact support.` };
+  }
 }
 
 async function callUsage(token, operation = 'check', extra = {}) {
