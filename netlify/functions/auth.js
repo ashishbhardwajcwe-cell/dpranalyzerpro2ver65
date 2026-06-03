@@ -109,14 +109,20 @@ exports.handler = async (event) => {
     // Check expiry date
     if (firm.expiry_date) {
       const expiry = new Date(firm.expiry_date);
-      expiry.setHours(23, 59, 59, 999);
-      console.log('auth.js: expiry check — expiry date:', expiry.toISOString(), '| now:', new Date().toISOString(), '| expired:', expiry < new Date());
-      if (expiry < new Date()) {
-        return {
-          statusCode: 200,
-          headers: CORS_HEADERS,
-          body: JSON.stringify({ valid: false, message: 'Your license has expired. Contact AURIS to renew.' }),
-        };
+      if (isNaN(expiry.getTime())) {
+        // Unparseable date — log and skip rather than crash
+        console.warn('auth.js: expiry_date is not a valid date string:', firm.expiry_date, '— skipping expiry check');
+      } else {
+        expiry.setHours(23, 59, 59, 999);
+        const expired = expiry < new Date();
+        console.log('auth.js: expiry check — raw:', firm.expiry_date, '| expired:', expired);
+        if (expired) {
+          return {
+            statusCode: 200,
+            headers: CORS_HEADERS,
+            body: JSON.stringify({ valid: false, message: 'Your license has expired. Contact AURIS to renew.' }),
+          };
+        }
       }
     }
 
