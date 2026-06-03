@@ -70,6 +70,16 @@ exports.handler = async (event) => {
   }
 
   const { operation } = body;
+
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+    console.error('admin.js: missing Supabase env vars');
+    return {
+      statusCode: 500,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ error: 'Server misconfiguration. Contact support.' }),
+    };
+  }
+
   const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_SERVICE_KEY,

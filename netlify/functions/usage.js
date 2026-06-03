@@ -54,80 +54,98 @@ exports.handler = async (event) => {
     };
   }
 
-  const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY,
-    { realtime: { transport: ws } }
-  );
-
-  // Fetch firm by token
-  const { data: firm, error: firmError } = await supabase
-    .from('firms')
-    .select('id, firm_name, analyses_total, analyses_used, is_active')
-    .eq('access_token', token)
-    .single();
-
-  if (firmError || !firm) {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+    console.error('usage.js: missing Supabase env vars');
     return {
-      statusCode: 401,
+      statusCode: 500,
       headers: CORS_HEADERS,
-      body: JSON.stringify({ error: 'Invalid access token' }),
+      body: JSON.stringify({ error: 'Server misconfiguration. Contact support.' }),
     };
   }
 
-  const analysesRemaining = firm.analyses_total - firm.analyses_used;
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_KEY,
+      { realtime: { transport: ws } }
+    );
 
-  // --- Operation: check ---
-  if (!operation || operation === 'check') {
-    return {
-      statusCode: 200,
-      headers: CORS_HEADERS,
-      body: JSON.stringify({
-        success: true,
-        firm_name: firm.firm_name,
-        analyses_remaining: analysesRemaining,
-        analyses_total: firm.analyses_total,
-        analyses_used: firm.analyses_used,
-        is_active: firm.is_active,
-      }),
-    };
-  }
+    // Fetch firm by token
+    const { data: firm, error: firmError } = await supabase
+      .from('firms')
+      .select('id, firm_name, analyses_total, analyses_used, is_active')
+      .eq('access_token', token)
+      .single();
 
-  // --- Operation: log ---
-  if (operation === 'log') {
-    const { project_name, document_name, status = 'success' } = body;
-
-    const { error: logError } = await supabase
-      .from('usage_log')
-      .insert({
-        firm_id:       firm.id,
-        firm_name:     firm.firm_name,
-        project_name:  project_name || 'Unknown Project',
-        document_name: document_name || 'Unknown Document',
-        analyses_before: analysesRemaining + 1, // Before this usage
-        analyses_after:  analysesRemaining,
-        status,
-      });
-
-    if (logError) {
-      console.error('usage.js log error:', logError);
+    if (firmError || !firm) {
       return {
-        statusCode: 500,
+        statusCode: 401,
         headers: CORS_HEADERS,
-        body: JSON.stringify({ error: 'Failed to write log entry' }),
+        body: JSON.stringify({ error: 'Invalid access token' }),
+      };
+    }
+
+    const analysesRemaining = firm.analyses_total - firm.analyses_used;
+
+    // --- Operation: check ---
+    if (!operation || operation === 'check') {
+      return {
+        statusCode: 200,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({
+          success: true,
+          firm_name: firm.firm_name,
+          analyses_remaining: analysesRemaining,
+          analyses_total: firm.analyses_total,
+          analyses_used: firm.analyses_used,
+          is_active: firm.is_active,
+        }),
+      };
+    }
+
+    // --- Operation: log ---
+    if (operation === 'log') {
+      const { project_name, document_name, status = 'success' } = body;
+
+      const { error: logError } = await supabase
+        .from('usage_log')
+        .insert({
+          firm_id:       firm.id,
+          firm_name:     firm.firm_name,
+          project_name:  project_name || 'Unknown Project',
+          document_name: document_name || 'Unknown Document',
+          analyses_before: analysesRemaining + 1,
+          analyses_after:  analysesRemaining,
+          status,
+        });
+
+      if (logError) {
+        console.error('usage.js log error:', logError);
+        return {
+          statusCode: 500,
+          headers: CORS_HEADERS,
+          body: JSON.stringify({ error: 'Failed to write log entry' }),
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ success: true, message: 'Log entry written' }),
       };
     }
 
     return {
-      statusCode: 200,
+      statusCode: 400,
       headers: CORS_HEADERS,
-      body: JSON.stringify({ success: true, message: 'Log entry written' }),
+      body: JSON.stringify({ error: `Unknown operation: ${operation}. Use "check" or "log".` }),
+    };
+  } catch (err) {
+    console.error('usage.js error:', err);
+    return {
+      statusCode: 500,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ error: 'Server error. Please try again later.' }),
     };
   }
-
-  return {
-    statusCode: 400,
-    headers: CORS_HEADERS,
-    body: JSON.stringify({ error: `Unknown operation: ${operation}. Use "check" or "log".` }),
-  };
 };

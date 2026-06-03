@@ -249,11 +249,28 @@ exports.handler = async (event) => {
     };
   }
 
-  // Initialise clients
-  const supabase  = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { realtime: { transport: ws } });
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+    console.error('analyze.js: missing Supabase env vars');
+    return {
+      statusCode: 500,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ error: 'Server misconfiguration: database credentials not set. Contact support.' }),
+    };
+  }
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error('analyze.js: missing ANTHROPIC_API_KEY');
+    return {
+      statusCode: 500,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ error: 'Server misconfiguration: AI credentials not set. Contact support.' }),
+    };
+  }
 
   try {
+    // Initialise clients
+    const supabase  = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { realtime: { transport: ws } });
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     // Step 1: Validate token and get firm details
     const { data: firm, error: firmError } = await supabase
       .from('firms')

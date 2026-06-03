@@ -59,14 +59,23 @@ exports.handler = async (event) => {
     };
   }
 
-  // Initialise Supabase with service role key (server-side only)
-  const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY,
-    { realtime: { transport: ws } }
-  );
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+    console.error('auth.js: missing Supabase env vars');
+    return {
+      statusCode: 500,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ valid: false, message: 'Server misconfiguration. Contact support.' }),
+    };
+  }
 
   try {
+    // Initialise Supabase with service role key (server-side only)
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_KEY,
+      { realtime: { transport: ws } }
+    );
+
     // Lookup token in firms table
     const { data: firm, error } = await supabase
       .from('firms')
