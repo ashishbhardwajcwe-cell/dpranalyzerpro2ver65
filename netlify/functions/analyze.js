@@ -60,21 +60,28 @@ const IRC_DATA_DIR = path.join(__dirname, '..', '..', 'irc-data');
 
 /**
  * Loads all available IRC reference files from irc-data/.
- * Files not yet placed are silently skipped.
+ * Logs which files are found/missing so Netlify logs are auditable.
+ * Missing files are silently skipped — they never crash the function.
  */
 function loadIrcReferenceContent() {
   let combined = '';
+  let loaded = 0;
   for (const filename of IRC_FILES) {
     const filePath = path.join(IRC_DATA_DIR, filename);
     try {
       if (fs.existsSync(filePath)) {
         const content = fs.readFileSync(filePath, 'utf8');
         combined += `\n\n=== ${filename} ===\n${content}`;
+        loaded++;
+        console.log(`IRC file loaded: ${filename} (${content.length} chars)`);
+      } else {
+        console.log(`IRC file not found (skipped): ${filename}`);
       }
     } catch (err) {
       console.warn(`Could not read IRC file ${filename}:`, err.message);
     }
   }
+  console.log(`IRC reference: ${loaded}/${IRC_FILES.length} files loaded`);
   return combined;
 }
 
@@ -201,7 +208,7 @@ Return ONLY valid JSON with no markdown backticks:
   "overall_recommendation": "string"
 }
 
-Generate 12 to 18 findings with natural severity distribution across all four levels.`;
+Generate 15 to 20 findings with natural severity distribution across all four levels.`;
 
 exports.handler = async (event) => {
   // Handle CORS preflight
@@ -358,15 +365,46 @@ Analyze the document thoroughly and return the compliance findings in the exact 
       ];
     }
 
-    const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 200000,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: messageContent }],
-    });
+    // Step 6: Call Anthropic using streaming to handle long responses reliably.
+    // Collect the full streamed response before processing.
+    let rawText;
+    try {
+      const stream = await anthropic.messages.stream({
+        model:      'claude-haiku-4-5-20251001',
+        max_tokens: 30000,
+        system:     SYSTEM_PROMPT,
+        messages:   [{ role: 'user', content: messageContent }],
+      });
+      const message = await stream.finalMessage();
+      rawText = message.content
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
+    } catch (streamErr) {
+      console.error('Anthropic streaming error:', streamErr);
+      const errMsg = streamErr.message || String(streamErr);
+      if (errMsg.includes('timeout') || errMsg.includes('timed out')) {
+        return {
+          statusCode: 504,
+          headers: CORS_HEADERS,
+          body: JSON.stringify({ error: 'Analysis timed out. Try a smaller document or split across multiple files.' }),
+        };
+      }
+      if (errMsg.includes('401') || errMsg.includes('authentication')) {
+        return {
+          statusCode: 500,
+          headers: CORS_HEADERS,
+          body: JSON.stringify({ error: 'Server configuration error: invalid API credentials. Contact support.' }),
+        };
+      }
+      return {
+        statusCode: 502,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'Analysis service error: ' + errMsg.substring(0, 200) }),
+      };
+    }
 
-    // Step 6: Parse JSON response
-    const rawText = response.content[0]?.text || '';
+    // Step 7: Parse JSON response
     let analysisResult;
     try {
       // Strip any accidental markdown backticks before parsing
@@ -374,11 +412,11 @@ Analyze the document thoroughly and return the compliance findings in the exact 
       analysisResult = JSON.parse(cleaned);
     } catch (parseErr) {
       console.error('Failed to parse Anthropic response as JSON:', parseErr);
-      console.error('Raw response text:', rawText.substring(0, 500));
+      console.error('Raw response (first 800 chars):', rawText.substring(0, 800));
       return {
         statusCode: 500,
         headers: CORS_HEADERS,
-        body: JSON.stringify({ error: 'AI returned an invalid response. Please retry.' }),
+        body: JSON.stringify({ error: 'Analysis returned malformed data. Please retry — if the problem persists contact support.' }),
       };
     }
 
@@ -387,7 +425,7 @@ Analyze the document thoroughly and return the compliance findings in the exact 
       analysisResult.project_name = projectName;
     }
 
-    // Step 7: ONLY on success — increment usage and write log
+    // Step 8: ONLY on success — increment usage and write log
     const { error: updateError } = await supabase
       .from('firms')
       .update({ analyses_used: firm.analyses_used + 1 })
@@ -414,7 +452,7 @@ Analyze the document thoroughly and return the compliance findings in the exact 
       console.error('Failed to write usage_log:', logError);
     }
 
-    // Step 8: Return result to frontend
+    // Step 9: Return result to frontend
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
@@ -425,11 +463,12 @@ Analyze the document thoroughly and return the compliance findings in the exact 
       }),
     };
   } catch (err) {
-    console.error('analyze.js unhandled error:', err);
+    console.error('analyze.js unhandled error:', err.name, err.message, err.stack);
+    const msg = err.message || String(err);
     return {
       statusCode: 500,
       headers: CORS_HEADERS,
-      body: JSON.stringify({ error: 'An unexpected error occurred. Please try again.' }),
+      body: JSON.stringify({ error: 'Unexpected server error: ' + msg.substring(0, 200) }),
     };
   }
 };
