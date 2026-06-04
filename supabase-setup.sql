@@ -73,12 +73,46 @@ CREATE INDEX IF NOT EXISTS idx_usage_log_firm_id ON usage_log(firm_id);
 CREATE INDEX IF NOT EXISTS idx_usage_log_timestamp ON usage_log(analysis_timestamp DESC);
 
 -- ============================================================
+-- TABLE 3: analysis_jobs
+-- Background job queue for long-running Anthropic analyses.
+-- analyze.js writes 'pending' rows; analyze-background.js processes
+-- them and writes results back; analyze-status.js is polled by the client.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS analysis_jobs (
+  id                 UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+  firm_id            UUID        REFERENCES firms(id) ON DELETE SET NULL,
+  firm_name          TEXT,
+  project_name       TEXT,
+  document_name      TEXT,
+  file_type          TEXT,
+  -- Inbound payload (one of these is set):
+  document_text      TEXT,
+  document_base64    TEXT,
+  -- Analyses-remaining snapshot taken at job creation (so we can
+  -- write the correct before/after values into usage_log on success):
+  analyses_before    INTEGER,
+  -- Lifecycle:
+  status             TEXT        DEFAULT 'pending', -- pending | processing | complete | failed
+  result_json        JSONB,
+  error_message      TEXT,
+  truncation_notice  TEXT,
+  created_at         TIMESTAMPTZ DEFAULT NOW(),
+  started_at         TIMESTAMPTZ,
+  completed_at       TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_analysis_jobs_firm_id ON analysis_jobs(firm_id);
+CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status  ON analysis_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_analysis_jobs_created ON analysis_jobs(created_at DESC);
+
+-- ============================================================
 -- ROW LEVEL SECURITY
 -- ============================================================
 
--- Enable RLS on both tables
-ALTER TABLE firms ENABLE ROW LEVEL SECURITY;
-ALTER TABLE usage_log ENABLE ROW LEVEL SECURITY;
+-- Enable RLS on all tables
+ALTER TABLE firms          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE usage_log      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analysis_jobs  ENABLE ROW LEVEL SECURITY;
 
 -- Policy: Service role (used by Netlify functions with SUPABASE_SERVICE_KEY)
 -- has unrestricted access. Anonymous/authenticated users have no direct access.
@@ -95,6 +129,14 @@ CREATE POLICY "Service role full access on firms"
 -- Usage log policies
 CREATE POLICY "Service role full access on usage_log"
   ON usage_log
+  FOR ALL
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+-- Analysis-jobs policies
+CREATE POLICY "Service role full access on analysis_jobs"
+  ON analysis_jobs
   FOR ALL
   TO service_role
   USING (true)

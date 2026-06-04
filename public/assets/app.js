@@ -53,25 +53,89 @@ async function callAuth(token) {
   }
 }
 
-async function callAnalyze(payload) {
-  const res = await fetch('/.netlify/functions/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const text = await res.text();
+// callAnalyze: kicks off a background job and polls until the result lands.
+// Returns { success, result, analyses_remaining } on success, or { error } on failure.
+// onProgress(status) is called whenever the job state changes — UI uses this
+// to keep the user informed ("queued" → "analyzing" → "preparing report").
+async function callAnalyze(payload, onProgress) {
+  // 1) START — analyze.js validates, queues the job, returns job_id
+  let startRes;
   try {
-    return JSON.parse(text);
+    startRes = await fetch('/.netlify/functions/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
   } catch {
-    // Function returned non-JSON — infrastructure-level error
-    if (res.status === 413) {
+    return { error: 'Network error. Please check your connection and retry.' };
+  }
+
+  let started;
+  try {
+    started = JSON.parse(await startRes.text());
+  } catch {
+    if (startRes.status === 413) {
       return { error: 'File too large to upload. For very large PDF/Word/PowerPoint files, split the document into smaller sections and analyze each separately.' };
     }
-    if (res.status === 504 || res.status === 502) {
-      return { error: 'Analysis timed out. Please try a smaller document or split it into sections.' };
-    }
-    return { error: `Server error (${res.status}). Please retry. If the problem persists, contact support.` };
+    return { error: `Server error (${startRes.status}). Please retry. If the problem persists, contact support.` };
   }
+
+  if (!startRes.ok || !started || !started.job_id) {
+    return { error: started && started.error ? started.error : `Could not start analysis (${startRes.status}).` };
+  }
+
+  const jobId = started.job_id;
+  if (onProgress) onProgress('queued');
+
+  // 2) POLL — analyze-status.js returns status + result when ready
+  // Total budget: 12 minutes (well under the 15-minute background-function ceiling).
+  // Initial 4s poll cadence, then 6s, capped at 10s.
+  const startedAt = Date.now();
+  const MAX_WAIT_MS = 12 * 60 * 1000;
+  let lastStatus = 'pending';
+  let waitMs = 4000;
+
+  while (Date.now() - startedAt < MAX_WAIT_MS) {
+    await new Promise((r) => setTimeout(r, waitMs));
+    waitMs = Math.min(waitMs + 1500, 10000);
+
+    let pollRes;
+    try {
+      pollRes = await fetch('/.netlify/functions/analyze-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: payload.token, job_id: jobId }),
+      });
+    } catch {
+      continue;  // transient network issue — keep polling
+    }
+
+    let body;
+    try { body = JSON.parse(await pollRes.text()); } catch { continue; }
+    if (!body || !body.status) continue;
+
+    if (body.status !== lastStatus) {
+      lastStatus = body.status;
+      if (onProgress) onProgress(body.status);
+    }
+
+    if (body.status === 'complete') {
+      return {
+        success:            true,
+        result:             body.result,
+        analyses_remaining: body.analyses_remaining,
+      };
+    }
+    if (body.status === 'failed') {
+      return {
+        error:              body.error || 'Analysis failed. Please retry.',
+        analyses_remaining: body.analyses_remaining,
+      };
+    }
+    // else pending|processing — keep polling
+  }
+
+  return { error: 'Analysis timed out (12 minutes). Try a smaller document or split it into sections.' };
 }
 
 async function callUsage(token, operation = 'check', extra = {}) {
